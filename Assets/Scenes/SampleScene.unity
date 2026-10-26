@@ -10520,13 +10520,13 @@ MonoBehaviour:
   pivotTransform: {fileID: 1870165843}
   rotationAxis: 0
   invertAxis: 0
-  offAngle: -1.4
-  onAngle: 68
-  tripAngle: 33.3
+  offAngle: 70
+  onAngle: -14.259
+  tripAngle: 27.87
   transitionSpeed: 350
   audioSource: {fileID: 0}
   currentState: 0
-  currentAngle: -1.4
+  currentAngle: 70
   OnStateChanged:
     m_PersistentCalls:
       m_Calls: []

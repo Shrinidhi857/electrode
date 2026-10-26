@@ -182,16 +182,16 @@ namespace ContactorAR.UI
                     switch (state)
                     {
                         case BreakerState.On:
-                            statusBannerText.text = "BREAKER: CLOSED / ON (68.0°)";
+                            statusBannerText.text = $"BREAKER: CLOSED / ON ({contactor.Lever.OnAngle:F1}°)";
                             statusBannerText.color = new Color(0.2f, 0.9f, 0.3f);
                             break;
                         case BreakerState.Tripped:
-                            statusBannerText.text = "BREAKER: TRIPPED (33.3°)";
+                            statusBannerText.text = $"BREAKER: TRIPPED ({contactor.Lever.TripAngle:F1}°)";
                             statusBannerText.color = new Color(1.0f, 0.6f, 0.1f);
                             break;
                         case BreakerState.Off:
                         default:
-                            statusBannerText.text = "BREAKER: OPEN / OFF (-1.4°)";
+                            statusBannerText.text = $"BREAKER: OPEN / OFF ({contactor.Lever.OffAngle:F1}°)";
                             statusBannerText.color = new Color(0.9f, 0.25f, 0.25f);
                             break;
                     }

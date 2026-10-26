@@ -66,12 +66,12 @@ namespace ContactorAR.Editor
                 MCBPivotLever lever = breakerObj.GetComponent<MCBPivotLever>();
                 if (lever == null) lever = breakerObj.AddComponent<MCBPivotLever>();
 
-                // Configure exact angles: -1.4 deg to 68.0 deg
+                // Configure exact calibrated angles: ON (-14.259°), OFF (70.0°), TRIP (27.87°)
                 SerializedObject so = new SerializedObject(lever);
                 so.FindProperty("pivotTransform").objectReferenceValue = pivotTrans;
-                so.FindProperty("offAngle").floatValue = -1.4f;
-                so.FindProperty("onAngle").floatValue = 68.0f;
-                so.FindProperty("tripAngle").floatValue = 33.3f;
+                so.FindProperty("offAngle").floatValue = 70.0f;
+                so.FindProperty("onAngle").floatValue = -14.259f;
+                so.FindProperty("tripAngle").floatValue = 27.87f;
                 so.FindProperty("rotationAxis").enumValueIndex = 0; // X axis
                 so.ApplyModifiedProperties();
             }

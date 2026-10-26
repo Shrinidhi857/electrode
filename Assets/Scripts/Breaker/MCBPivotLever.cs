@@ -37,14 +37,14 @@ namespace ContactorAR.Breaker
         [SerializeField] private bool invertAxis = false;
 
         [Header("Angle Limits (Degrees)")]
-        [Tooltip("Angle corresponding to OFF state (-1.4 deg default).")]
-        [SerializeField] private float offAngle = -15.4f;
+        [Tooltip("Angle corresponding to OFF state (70.0 deg).")]
+        [SerializeField] private float offAngle = 70.0f;
 
-        [Tooltip("Angle corresponding to ON state (68.0 deg default).")]
-        [SerializeField] private float onAngle = 75.0f;
+        [Tooltip("Angle corresponding to ON state (-14.259 deg).")]
+        [SerializeField] private float onAngle = -14.259f;
 
-        [Tooltip("Angle corresponding to TRIPPED state (middle position ~33.3 deg).")]
-        [SerializeField] private float tripAngle = 40.3f;
+        [Tooltip("Angle corresponding to TRIPPED state (middle position ~27.87 deg).")]
+        [SerializeField] private float tripAngle = 27.87f;
 
         [Header("Motion Settings")]
         [Tooltip("Speed when smoothly moving to a commanded state.")]
@@ -55,14 +55,14 @@ namespace ContactorAR.Breaker
 
         [Header("State")]
         [SerializeField] private BreakerState currentState = BreakerState.Off;
-        [SerializeField] private float currentAngle = -1.4f;
+        [SerializeField] private float currentAngle = 70.0f;
 
         [Header("Events")]
         public UnityEvent<BreakerState> OnStateChanged;
         public UnityEvent<float, float> OnAngleChanged; // currentAngle, normalized (0 = off, 1 = on)
 
         private Quaternion initialLocalRotation;
-        private float targetAngle = -1.4f;
+        private float targetAngle = 70.0f;
         private bool isAnimating = false;
         private bool isDragging = false;
         private Vector3 dragStartHit;
@@ -335,8 +335,9 @@ namespace ContactorAR.Breaker
             // Project movement onto lever plane
             Vector3 delta = currentWorldPoint - dragStartHit;
             float dragDistance = Vector3.Dot(delta, transform.up);
-            // Convert vertical drag distance to angle
-            float angleDelta = dragDistance * 300.0f;
+            // Convert vertical drag distance to angle (dragging UP moves towards ON)
+            float sign = (onAngle > offAngle) ? 1.0f : -1.0f;
+            float angleDelta = dragDistance * 300.0f * sign;
             SetAngleManual(dragStartAngle + angleDelta);
         }
 
