@@ -98,9 +98,9 @@ namespace ContactorAR.Wiring
             }
             else if (snappedTerminal != null)
             {
-                // Smoothly lock to terminal's snap position (follows moving/hanging contactor)
-                transform.position = Vector3.Lerp(transform.position, snappedTerminal.SnapPosition, Time.deltaTime * snapLerpSpeed);
-                transform.rotation = Quaternion.Slerp(transform.rotation, snappedTerminal.transform.rotation, Time.deltaTime * snapLerpSpeed);
+                // Firm, zero-drift lock to terminal's snap point (moves perfectly with hanging/moving contactor)
+                transform.position = snappedTerminal.SnapPosition;
+                transform.rotation = snappedTerminal.transform.rotation;
             }
 
             UpdateVisualColor();
