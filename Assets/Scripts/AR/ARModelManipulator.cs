@@ -110,15 +110,36 @@ namespace ContactorAR.AR
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
 
-            // Handle Hanging Mode smooth transition
+            // Handle Hanging Mode smooth transition to locked position
             if (placementMode == PlacementMode.HangingAtCoordinates)
             {
-                transform.position = Vector3.Lerp(transform.position, hangingTargetCoordinate, Time.deltaTime * hangingLerpSpeed);
-                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(hangingTargetEuler), Time.deltaTime * hangingLerpSpeed);
+                if (Vector3.Distance(transform.position, hangingTargetCoordinate) > 0.005f)
+                {
+                    transform.position = Vector3.Lerp(transform.position, hangingTargetCoordinate, Time.deltaTime * hangingLerpSpeed);
+                    transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(hangingTargetEuler), Time.deltaTime * hangingLerpSpeed);
+                }
+                else
+                {
+                    // Snap exactly to target coordinate and permanently lock
+                    transform.position = hangingTargetCoordinate;
+                    transform.rotation = Quaternion.Euler(hangingTargetEuler);
+                    placementMode = PlacementMode.Locked;
+                    ApplyARAnchor();
+                    OnPlacementModeChanged?.Invoke(placementMode);
+                }
                 return;
             }
 
-            if (placementMode == PlacementMode.Locked) return;
+            if (placementMode == PlacementMode.Locked)
+            {
+                // In locked mode, only lever and wire interactions are processed
+#if UNITY_EDITOR || UNITY_STANDALONE
+                HandleMouseInput();
+#else
+                HandleTouchInput();
+#endif
+                return;
+            }
 
 #if UNITY_EDITOR || UNITY_STANDALONE
             HandleMouseInput();
@@ -127,12 +148,24 @@ namespace ContactorAR.AR
 #endif
         }
 
-        #region Coordinate Hanging API
+        #region Coordinate Hanging & Locking API
+        /// <summary>
+        /// Locks the breaker firmly in place at its current position with an ARAnchor.
+        /// </summary>
+        public void LockCurrentPosition()
+        {
+            placementMode = PlacementMode.Locked;
+            ApplyARAnchor();
+            OnPlacementModeChanged?.Invoke(placementMode);
+            Debug.Log($"[ARModelManipulator] Breaker locked at current position: {transform.position}");
+        }
+
         /// <summary>
         /// Hangs the contactor at a specific world coordinate.
         /// </summary>
         public void HangAtCoordinate(Vector3 targetWorldPosition, Quaternion? targetRotation = null)
         {
+            RemoveARAnchor();
             hangingTargetCoordinate = targetWorldPosition;
             if (targetRotation.HasValue)
             {
@@ -141,7 +174,7 @@ namespace ContactorAR.AR
             placementMode = PlacementMode.HangingAtCoordinates;
             OnPlacementModeChanged?.Invoke(placementMode);
             OnHangingCoordinateUpdated?.Invoke(hangingTargetCoordinate);
-            Debug.Log($"[ARModelManipulator] Breaker hung at coordinates: {hangingTargetCoordinate}");
+            Debug.Log($"[ARModelManipulator] Breaker hanging commanded to: {hangingTargetCoordinate}");
         }
 
         /// <summary>
@@ -308,13 +341,14 @@ namespace ContactorAR.AR
                 // Priority 3: Breaker model body clicked
                 if (hit.transform == transform || hit.transform.IsChildOf(transform))
                 {
-                    isInteractingWithModel = true;
-                    dragDistance = Vector3.Distance(mainCamera.transform.position, transform.position);
-                    dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
-                    if (dragPlane.Raycast(ray, out float enter))
+                    // In Locked or Hanging mode, ignore body dragging completely so user can inspect or touch without accidental movement
+                    if (placementMode == PlacementMode.Locked || placementMode == PlacementMode.HangingAtCoordinates)
                     {
-                        dragOffset = transform.position - ray.GetPoint(enter);
+                        return;
                     }
+
+                    isInteractingWithModel = true;
+                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 4.0f);
                 }
             }
         }
@@ -331,7 +365,7 @@ namespace ContactorAR.AR
             {
                 Ray ray = mainCamera.ScreenPointToRay(screenPos);
                 Plane leverPlane = new Plane(-mainCamera.transform.forward, activeLever.transform.position);
-                if (leverPlane.Raycast(ray, out float enter))
+                if (leverPlane.Raycast(ray, out float enter) && enter > 0.05f)
                 {
                     activeLever.DragLever(ray.GetPoint(enter));
                 }
@@ -341,9 +375,15 @@ namespace ContactorAR.AR
             if (isInteractingWithModel && placementMode == PlacementMode.FreeMovable)
             {
                 Ray ray = mainCamera.ScreenPointToRay(screenPos);
-                if (dragPlane.Raycast(ray, out float enter))
+                Plane currentPlane = new Plane(-mainCamera.transform.forward, mainCamera.transform.position + mainCamera.transform.forward * dragDistance);
+                if (currentPlane.Raycast(ray, out float enter) && enter > 0.05f)
                 {
-                    transform.position = ray.GetPoint(enter) + dragOffset;
+                    transform.position = ray.GetPoint(enter);
+                }
+                else
+                {
+                    // Strictly keep in front of camera
+                    transform.position = ray.GetPoint(dragDistance);
                 }
             }
         }
@@ -372,6 +412,27 @@ namespace ContactorAR.AR
             float newScaleX = Mathf.Clamp(current.x * factor, minScale, maxScale);
             float ratio = newScaleX / current.x;
             transform.localScale = current * ratio;
+        }
+
+        private void ApplyARAnchor()
+        {
+#if !UNITY_EDITOR
+            if (GetComponent<UnityEngine.XR.ARFoundation.ARAnchor>() == null)
+            {
+                gameObject.AddComponent<UnityEngine.XR.ARFoundation.ARAnchor>();
+            }
+#endif
+        }
+
+        private void RemoveARAnchor()
+        {
+#if !UNITY_EDITOR
+            var anchor = GetComponent<UnityEngine.XR.ARFoundation.ARAnchor>();
+            if (anchor != null)
+            {
+                Destroy(anchor);
+            }
+#endif
         }
         #endregion
     }

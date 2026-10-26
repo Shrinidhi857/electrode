@@ -124,7 +124,14 @@ namespace ContactorAR.UI
         {
             if (manipulator != null)
             {
-                manipulator.ToggleHanging();
+                if (manipulator.Mode == PlacementMode.Locked || manipulator.Mode == PlacementMode.HangingAtCoordinates)
+                {
+                    manipulator.ReleaseToFreeMovable();
+                }
+                else
+                {
+                    manipulator.LockCurrentPosition();
+                }
                 UpdateAllTelemetry();
             }
         }
@@ -206,10 +213,11 @@ namespace ContactorAR.UI
                 powerButtonLabel.text = simulator.MainsSupplyEnabled ? "MAINS: ON" : "MAINS: OFF";
             }
 
-            // 4. Hang Button Label
+            // 4. Lock / Move Button Label
             if (hangButtonLabel != null && manipulator != null)
             {
-                hangButtonLabel.text = manipulator.IsHanging ? "UNPIN / FREE MOVE" : "HANG AT COORD";
+                bool isLocked = manipulator.Mode == PlacementMode.Locked || manipulator.Mode == PlacementMode.HangingAtCoordinates;
+                hangButtonLabel.text = isLocked ? "UNLOCK / MOVE" : "LOCK IN PLACE";
             }
         }
         #endregion

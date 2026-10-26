@@ -86,7 +86,21 @@ namespace ContactorAR.Breaker
             }
             else log.AppendLine("[OK] PowerCircuitSimulator found.");
 
-            // 7. Validate scale
+            // 7. Validate distance from camera (prevent spawning 12m away where camera walks past it)
+            Camera cam = Camera.main;
+            if (cam != null)
+            {
+                float dist = Vector3.Distance(transform.position, cam.transform.position);
+                if (dist > 3.0f || transform.position.z > 3.0f)
+                {
+                    Vector3 calibratedPos = cam.transform.position + cam.transform.forward * 0.85f;
+                    transform.position = calibratedPos;
+                    transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
+                    log.AppendLine($"[CALIBRATED] Breaker brought from far distance ({dist:F1}m) to 0.85m directly in front of camera.");
+                }
+            }
+
+            // 8. Validate scale
             float scaleX = transform.localScale.x;
             if (scaleX < 0.05f || scaleX > 200f)
             {
@@ -95,6 +109,13 @@ namespace ContactorAR.Breaker
             else
             {
                 log.AppendLine($"[OK] Scale: {transform.localScale}");
+            }
+
+            // 9. Lock model in place to prevent drift
+            if (arManip != null)
+            {
+                arManip.LockCurrentPosition();
+                log.AppendLine("[OK] Breaker anchored and locked to prevent camera drift.");
             }
 
             log.AppendLine("=== Bootstrap Complete ===");

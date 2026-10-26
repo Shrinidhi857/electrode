@@ -136,19 +136,8 @@ namespace ContactorAR.Wiring
                 Unsnap();
             }
 
-            // Create interaction plane facing camera
-            dragDistance = Vector3.Distance(mainCamera.transform.position, transform.position);
-            dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
-
-            Ray ray = mainCamera.ScreenPointToRay(touchPosition);
-            if (dragPlane.Raycast(ray, out float enter))
-            {
-                dragOffset = transform.position - ray.GetPoint(enter);
-            }
-            else
-            {
-                dragOffset = Vector3.zero;
-            }
+            // Lock interaction depth to current distance from camera, clamped safely
+            dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 4.0f);
         }
 
         public void DragToScreenPosition(Vector3 touchPosition, float pinchDistanceDelta = 0f)
@@ -158,14 +147,21 @@ namespace ContactorAR.Wiring
             // Optional pinch depth adjustment
             if (Mathf.Abs(pinchDistanceDelta) > 0.001f)
             {
-                dragDistance = Mathf.Clamp(dragDistance + pinchDistanceDelta * 0.05f, 0.3f, 5.0f);
-                dragPlane = new Plane(-mainCamera.transform.forward, mainCamera.transform.position + mainCamera.transform.forward * dragDistance);
+                dragDistance = Mathf.Clamp(dragDistance + pinchDistanceDelta * 0.05f, 0.3f, 4.0f);
             }
 
             Ray ray = mainCamera.ScreenPointToRay(touchPosition);
-            if (dragPlane.Raycast(ray, out float enter))
+            
+            // Dynamic forward plane facing current camera pose - NEVER shoot behind camera!
+            Plane currentPlane = new Plane(-mainCamera.transform.forward, mainCamera.transform.position + mainCamera.transform.forward * dragDistance);
+            if (currentPlane.Raycast(ray, out float enter) && enter > 0.05f)
             {
-                transform.position = ray.GetPoint(enter) + dragOffset;
+                transform.position = ray.GetPoint(enter);
+            }
+            else
+            {
+                // Rock-solid fallback: Always keep strictly in front of camera
+                transform.position = ray.GetPoint(dragDistance);
             }
         }
 
@@ -224,6 +220,8 @@ namespace ContactorAR.Wiring
             {
                 snappedTerminal = terminal;
                 transform.position = terminal.SnapPosition;
+                transform.rotation = terminal.transform.rotation;
+                transform.SetParent(terminal.transform, true); // Physically anchor to terminal
                 OnSnapped?.Invoke(this, terminal);
 
                 if (parentWire != null)
@@ -239,6 +237,7 @@ namespace ContactorAR.Wiring
             {
                 TerminalPoint prev = snappedTerminal;
                 snappedTerminal = null;
+                transform.SetParent(parentWire != null ? parentWire.transform : null, true); // Restore parent
                 prev.Disconnect(this);
                 OnUnsnapped?.Invoke(this);
 
