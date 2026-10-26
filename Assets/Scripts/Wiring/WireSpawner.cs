@@ -66,10 +66,30 @@ namespace ContactorAR.Wiring
             CylindricalWire wire = wireObj.AddComponent<CylindricalWire>();
             wire.EnsureConnectorEnds();
 
-            // Position end A and end B nicely spread out
-            Vector3 spread = cam != null ? cam.transform.right * 0.18f : Vector3.right * 0.18f;
-            wire.EndA.transform.position = spawnOrigin - spread;
-            wire.EndB.transform.position = spawnOrigin + spread;
+            // If an unoccupied terminal exists, auto-attach EndA to it for instant snap workflow
+            TerminalPoint openTerminal = null;
+            TerminalPoint[] allTerminals = FindObjectsByType<TerminalPoint>(FindObjectsSortMode.None);
+            for (int i = 0; i < allTerminals.Length; i++)
+            {
+                if (!allTerminals[i].IsOccupied)
+                {
+                    openTerminal = allTerminals[i];
+                    break;
+                }
+            }
+
+            if (openTerminal != null)
+            {
+                wire.EndA.SnapToTerminal(openTerminal);
+                // Position EndB slightly outward along pipeline exit direction ready to drag
+                wire.EndB.transform.position = openTerminal.SnapPosition + openTerminal.OutwardDirection * 0.12f + Vector3.forward * 0.05f;
+            }
+            else
+            {
+                Vector3 spread = cam != null ? cam.transform.right * 0.12f : Vector3.right * 0.12f;
+                wire.EndA.transform.position = spawnOrigin - spread;
+                wire.EndB.transform.position = spawnOrigin + spread;
+            }
 
             wire.Setup(wire.EndA, wire.EndB, color, phase);
             spawnedWires.Add(wire);

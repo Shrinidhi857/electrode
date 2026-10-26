@@ -150,11 +150,11 @@ namespace ContactorAR.Simulation
                 }
             }
 
-            // 5. Propagate power through connected wires
+            // 5. Propagate power through fully connected wires (both ends connected to actual terminals)
             for (int i = 0; i < allWires.Length; i++)
             {
                 CylindricalWire wire = allWires[i];
-                if (wire == null || wire.EndA == null || wire.EndB == null) continue;
+                if (wire == null || !wire.IsFullyConnected) continue;
 
                 TerminalPoint termA = wire.EndA.SnappedTerminal;
                 TerminalPoint termB = wire.EndB.SnappedTerminal;

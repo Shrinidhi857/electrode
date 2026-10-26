@@ -181,6 +181,11 @@ namespace ContactorAR.Wiring
                 closestCandidate.SetHighlight(false);
                 closestCandidate = null;
             }
+
+            if (parentWire != null)
+            {
+                parentWire.ValidateConnectionState();
+            }
         }
         #endregion
 

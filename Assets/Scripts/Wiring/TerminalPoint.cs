@@ -56,6 +56,23 @@ namespace ContactorAR.Wiring
 
         public Vector3 SnapPosition => transform.TransformPoint(snapAnchorOffset);
 
+        /// <summary>
+        /// Outward pipeline exit direction pointing away from contactor body for Lucid pipeline routing.
+        /// </summary>
+        public Vector3 OutwardDirection
+        {
+            get
+            {
+                if (parentContactor != null)
+                {
+                    Vector3 diff = (SnapPosition - parentContactor.transform.position);
+                    diff.z = 0; // lateral/vertical routing plane
+                    if (diff.sqrMagnitude > 0.001f) return diff.normalized;
+                }
+                return terminalType == TerminalType.Input ? transform.up : -transform.up;
+            }
+        }
+
         public event Action<TerminalPoint, WireConnectorEnd> OnWireConnected;
         public event Action<TerminalPoint, WireConnectorEnd> OnWireDisconnected;
         public event Action<TerminalPoint> OnElectricalStateChanged;
