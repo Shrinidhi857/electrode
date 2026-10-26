@@ -56,6 +56,8 @@ namespace ContactorAR.Simulation
             {
                 contactor.Lever.OnStateChanged.AddListener(OnBreakerStateChanged);
             }
+            WireSystem.WireManager.OnWireConnected += OnWireConnectionChanged;
+            WireSystem.WireManager.OnWireDisconnected += OnWireConnectionChanged;
         }
 
         private void OnDisable()
@@ -64,6 +66,13 @@ namespace ContactorAR.Simulation
             {
                 contactor.Lever.OnStateChanged.RemoveListener(OnBreakerStateChanged);
             }
+            WireSystem.WireManager.OnWireConnected -= OnWireConnectionChanged;
+            WireSystem.WireManager.OnWireDisconnected -= OnWireConnectionChanged;
+        }
+
+        private void OnWireConnectionChanged(WireSystem.Terminal a, WireSystem.Terminal b, WireSystem.Wire w)
+        {
+            EvaluateCircuit();
         }
 
         private void Start()
@@ -196,6 +205,50 @@ namespace ContactorAR.Simulation
                 else
                 {
                     wire.SetElectricalState(false, 0f);
+                }
+            }
+
+            // 5b. Propagate power through WireSystem active wires
+            if (WireSystem.WireManager.Instance != null)
+            {
+                var activeSystemWires = WireSystem.WireManager.Instance.ActiveWires;
+                for (int i = 0; i < activeSystemWires.Count; i++)
+                {
+                    WireSystem.Wire sysWire = activeSystemWires[i];
+                    if (sysWire == null || !sysWire.IsConnected) continue;
+
+                    TerminalPoint termA = sysWire.StartTerminal != null ? sysWire.StartTerminal.GetComponent<TerminalPoint>() : null;
+                    TerminalPoint termB = sysWire.EndTerminal != null ? sysWire.EndTerminal.GetComponent<TerminalPoint>() : null;
+
+                    bool termAEnergized = termA != null && termA.IsEnergized;
+                    bool termBEnergized = termB != null && termB.IsEnergized;
+
+                    if (termA != null && termB != null)
+                    {
+                        if (termA.PhaseTag.StartsWith("L") && termB.PhaseTag == "N" ||
+                            termB.PhaseTag.StartsWith("L") && termA.PhaseTag == "N")
+                        {
+                            if (termAEnergized || termBEnergized)
+                            {
+                                isShortCircuitFault = true;
+                            }
+                        }
+                    }
+
+                    if (termAEnergized && termB != null && !termB.IsEnergized)
+                    {
+                        termB.SetElectricalState(true, termA.Voltage, termA.PhaseTag);
+                        totalLoadCurrent += 4.5f;
+                    }
+                    else if (termBEnergized && termA != null && !termA.IsEnergized)
+                    {
+                        termA.SetElectricalState(true, termB.Voltage, termB.PhaseTag);
+                        totalLoadCurrent += 4.5f;
+                    }
+                    else if (termAEnergized || termBEnergized)
+                    {
+                        totalLoadCurrent += 3.2f;
+                    }
                 }
             }
 

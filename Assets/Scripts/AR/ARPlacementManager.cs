@@ -135,6 +135,7 @@ namespace ContactorAR.AR
         #region AR Touch Placement
         private void HandleARTouchInput()
         {
+            if (WireSystem.WireInputController.IsDragging) return;
             if (Input.touchCount == 0) return;
 
             Touch touch = Input.GetTouch(0);

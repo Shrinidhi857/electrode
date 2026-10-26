@@ -107,6 +107,8 @@ namespace ContactorAR.AR
 
         private void Update()
         {
+            if (WireSystem.WireInputController.IsDragging) return;
+
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
 
