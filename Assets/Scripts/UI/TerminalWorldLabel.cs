@@ -151,7 +151,15 @@ namespace ContactorAR.UI
 
         public void SetVisible(bool visible)
         {
-            gameObject.SetActive(visible);
+            if (worldCanvas == null) worldCanvas = GetComponent<Canvas>();
+            if (worldCanvas != null)
+            {
+                worldCanvas.enabled = visible;
+            }
+            else
+            {
+                gameObject.SetActive(visible);
+            }
         }
     }
 }

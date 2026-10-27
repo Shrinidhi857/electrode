@@ -3706,8 +3706,8 @@ MonoBehaviour:
   wireColor: {r: 0.92, g: 0.22, b: 0.22, a: 1}
   pickRadiusPx: 60
   snapRadiusPx: 50
-  wireRadius: 0.003
-  endSphereRadius: 0.006
+  wireRadius: 0.04
+  endSphereRadius: 0.06
   stub: 0.02
 --- !u!1 &622838285
 GameObject:

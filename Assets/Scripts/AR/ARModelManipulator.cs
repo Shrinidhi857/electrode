@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using ContactorAR.Breaker;
 using ContactorAR.Wiring;
@@ -13,13 +14,13 @@ namespace ContactorAR.AR
     }
 
     /// <summary>
-    /// Handles AR touch gestures for the breaker model:
-    /// - Pinch to Scale
-    /// - 1-Finger Drag to Move / Place
-    /// - 2-Finger Twist to Rotate
-    /// - Hanging / Pinning at specific coordinates (e.g., eye-level wall mounting, fixed world coordinates)
-    /// - Editor mouse emulation for seamless testing without mobile deployment
-    /// - Sub-element raycast filtering (allows dragging lever and wires without moving the whole model)
+    /// Handles AR touch gestures for contactor / breaker models:
+    /// - Centralized selection: only the tapped/selected model responds to scale, rotate, and move gestures.
+    /// - 1-Finger Drag to move across the view plane with zero jump (using hit point offset).
+    /// - 2-Finger Pinch to scale ONLY the selected model.
+    /// - 2-Finger Twist to rotate ONLY the selected model around Y axis.
+    /// - 2-Finger Parallel Drag (or Mouse Scroll) to move closer / further in Z (depth in 3D).
+    /// - Coordinate pinning / locking with ARAnchor when locked.
     /// </summary>
     [SelectionBase]
     public class ARModelManipulator : MonoBehaviour
@@ -47,6 +48,11 @@ namespace ContactorAR.AR
         [Header("Layer / Raycast Mask")]
         [SerializeField] private LayerMask interactableMask = ~0;
 
+        // ──────────── Global Registry & Single Selection ────────────
+        public static readonly List<ARModelManipulator> All = new List<ARModelManipulator>();
+        public static ARModelManipulator Selected { get; private set; }
+        public static event Action<ARModelManipulator> OnSelectionChanged;
+
         private Camera mainCamera;
         private Vector3 initialScale;
         private bool isInteractingWithModel = false;
@@ -64,6 +70,7 @@ namespace ContactorAR.AR
         public PlacementMode Mode => placementMode;
         public Vector3 HangingCoordinate => hangingTargetCoordinate;
         public bool IsHanging => placementMode == PlacementMode.HangingAtCoordinates;
+        public bool IsSelected => Selected == this;
 
         public event Action<PlacementMode> OnPlacementModeChanged;
         public event Action<Vector3> OnHangingCoordinateUpdated;
@@ -74,9 +81,35 @@ namespace ContactorAR.AR
             initialScale = transform.localScale;
         }
 
+        private void OnEnable()
+        {
+            if (!All.Contains(this)) All.Add(this);
+            if (Selected == null) Select(this);
+        }
+
+        private void OnDisable()
+        {
+            All.Remove(this);
+            if (Selected == this)
+            {
+                Select(All.Count > 0 ? All[0] : null);
+            }
+        }
+
         private void Start()
         {
             EnsureCollider();
+        }
+
+        /// <summary>
+        /// Selects this specific model manipulator as the active target for gestures and UI controls.
+        /// </summary>
+        public static void Select(ARModelManipulator target)
+        {
+            if (Selected == target) return;
+            Selected = target;
+            OnSelectionChanged?.Invoke(Selected);
+            Debug.Log($"[ARModelManipulator] Active selected model: {(Selected != null ? Selected.gameObject.name : "None")}");
         }
 
         private void EnsureCollider()
@@ -85,7 +118,6 @@ namespace ContactorAR.AR
             if (col == null)
             {
                 BoxCollider bc = gameObject.AddComponent<BoxCollider>();
-                // Auto compute bounding box from renderers
                 Bounds bounds = new Bounds(transform.position, Vector3.zero);
                 Renderer[] rends = GetComponentsInChildren<Renderer>();
                 if (rends.Length > 0)
@@ -107,10 +139,20 @@ namespace ContactorAR.AR
 
         private void Update()
         {
-            if (WireSystem.WireInputController.IsDragging) return;
+            if (WireDragController.IsDragging || WireSystem.WireInputController.IsDragging) return;
 
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
+
+            // Check if user clicked/tapped to select a different model in the scene
+            CheckTapSelection();
+
+            // CRITICAL: Only the currently SELECTED model executes gestures!
+            // This prevents pinching or moving one model from affecting any other model in the scene.
+            if (Selected != this)
+            {
+                return;
+            }
 
             // Handle Hanging Mode smooth transition to locked position
             if (placementMode == PlacementMode.HangingAtCoordinates)
@@ -122,7 +164,6 @@ namespace ContactorAR.AR
                 }
                 else
                 {
-                    // Snap exactly to target coordinate and permanently lock
                     transform.position = hangingTargetCoordinate;
                     transform.rotation = Quaternion.Euler(hangingTargetEuler);
                     placementMode = PlacementMode.Locked;
@@ -132,22 +173,50 @@ namespace ContactorAR.AR
                 return;
             }
 
-            if (placementMode == PlacementMode.Locked)
-            {
-                // In locked mode, only lever and wire interactions are processed
-#if UNITY_EDITOR || UNITY_STANDALONE
-                HandleMouseInput();
-#else
-                HandleTouchInput();
-#endif
-                return;
-            }
-
 #if UNITY_EDITOR || UNITY_STANDALONE
             HandleMouseInput();
 #else
             HandleTouchInput();
 #endif
+        }
+
+        /// <summary>
+        /// Checks if a touch or mouse click began on any model in the scene to switch selection.
+        /// </summary>
+        private void CheckTapSelection()
+        {
+            Vector3 tapPos = Vector3.zero;
+            bool tapBegan = false;
+
+            if (Input.touchCount > 0)
+            {
+                Touch t = Input.GetTouch(0);
+                if (t.phase == TouchPhase.Began)
+                {
+                    tapPos = t.position;
+                    tapBegan = true;
+                }
+            }
+#if UNITY_EDITOR || UNITY_STANDALONE
+            else if (Input.GetMouseButtonDown(0))
+            {
+                tapPos = Input.mousePosition;
+                tapBegan = true;
+            }
+#endif
+
+            if (tapBegan && mainCamera != null)
+            {
+                Ray ray = mainCamera.ScreenPointToRay(tapPos);
+                if (Physics.Raycast(ray, out RaycastHit hit, 50f, interactableMask))
+                {
+                    ARModelManipulator hitManip = hit.collider.GetComponentInParent<ARModelManipulator>();
+                    if (hitManip != null && hitManip != Selected)
+                    {
+                        Select(hitManip);
+                    }
+                }
+            }
         }
 
         #region Coordinate Hanging & Locking API
@@ -159,7 +228,7 @@ namespace ContactorAR.AR
             placementMode = PlacementMode.Locked;
             ApplyARAnchor();
             OnPlacementModeChanged?.Invoke(placementMode);
-            Debug.Log($"[ARModelManipulator] Breaker locked at current position: {transform.position}");
+            Debug.Log($"[ARModelManipulator] {gameObject.name} locked at: {transform.position}");
         }
 
         /// <summary>
@@ -176,11 +245,10 @@ namespace ContactorAR.AR
             placementMode = PlacementMode.HangingAtCoordinates;
             OnPlacementModeChanged?.Invoke(placementMode);
             OnHangingCoordinateUpdated?.Invoke(hangingTargetCoordinate);
-            Debug.Log($"[ARModelManipulator] Breaker hanging commanded to: {hangingTargetCoordinate}");
         }
 
         /// <summary>
-        /// Hangs the contactor directly in front of the AR camera at calibrated eye-level (e.g. wall mounting).
+        /// Hangs the contactor directly in front of the AR camera at calibrated eye-level.
         /// </summary>
         public void HangAtCameraEyeLevel(float distance = 1.2f, float heightOffset = 0.0f)
         {
@@ -189,7 +257,7 @@ namespace ContactorAR.AR
 
             Vector3 camPos = mainCamera.transform.position;
             Vector3 camFwd = mainCamera.transform.forward;
-            camFwd.y = 0; // Keep horizontal
+            camFwd.y = 0;
             camFwd.Normalize();
 
             Vector3 hangPos = camPos + camFwd * distance + Vector3.up * heightOffset;
@@ -199,27 +267,28 @@ namespace ContactorAR.AR
         }
 
         /// <summary>
-        /// Unpins/Releases the model so user can freely drag and pinch again.
+        /// Releases the model so user can freely drag in XYZ, pinch-to-scale, and twist-to-rotate.
         /// </summary>
         public void ReleaseToFreeMovable()
         {
+            RemoveARAnchor();
             placementMode = PlacementMode.FreeMovable;
             OnPlacementModeChanged?.Invoke(placementMode);
-            Debug.Log("[ARModelManipulator] Breaker released to free movable mode.");
+            Debug.Log($"[ARModelManipulator] {gameObject.name} released to FreeMovable mode.");
         }
 
         /// <summary>
-        /// Toggles between Hanging at coordinates and Free movable.
+        /// Toggles between Locked and Free movable.
         /// </summary>
-        public void ToggleHanging()
+        public void ToggleMovable()
         {
-            if (placementMode == PlacementMode.HangingAtCoordinates)
+            if (placementMode == PlacementMode.Locked || placementMode == PlacementMode.HangingAtCoordinates)
             {
                 ReleaseToFreeMovable();
             }
             else
             {
-                HangAtCameraEyeLevel(1.2f, 0.0f);
+                LockCurrentPosition();
             }
         }
         #endregion
@@ -235,7 +304,7 @@ namespace ContactorAR.AR
                 return;
             }
 
-            // 1-Finger Touch Interaction (Drag Model, Drag Lever, or Drag Wire)
+            // 1-Finger Touch Interaction (Drag Model in view plane, Drag Lever, or Drag Wire)
             if (touchCount == 1)
             {
                 Touch touch = Input.GetTouch(0);
@@ -253,13 +322,12 @@ namespace ContactorAR.AR
                     EndAnyDrag();
                 }
             }
-            // 2-Finger Touch Interaction (Pinch to Scale & Twist to Rotate)
+            // 2-Finger Touch Interaction (Pinch to Scale, Twist to Rotate, Parallel Drag for Z Depth)
             else if (touchCount == 2)
             {
                 Touch t0 = Input.GetTouch(0);
                 Touch t1 = Input.GetTouch(1);
 
-                // Pinch to scale
                 float currentPinchDist = Vector2.Distance(t0.position, t1.position);
                 if (t0.phase == TouchPhase.Began || t1.phase == TouchPhase.Began)
                 {
@@ -268,14 +336,40 @@ namespace ContactorAR.AR
                 else if (t0.phase == TouchPhase.Moved || t1.phase == TouchPhase.Moved)
                 {
                     float deltaPinch = currentPinchDist - previousPinchDistance;
-                    ApplyPinchScale(deltaPinch * pinchSensitivity);
-                    previousPinchDistance = currentPinchDist;
 
-                    // Twist rotation
+                    // Twist rotation angle
                     Vector2 prevDir = (t0.position - t0.deltaPosition) - (t1.position - t1.deltaPosition);
                     Vector2 currentDir = t0.position - t1.position;
                     float angle = Vector2.SignedAngle(prevDir, currentDir);
-                    transform.Rotate(Vector3.up, -angle * rotationSensitivity, Space.World);
+
+                    // Check if both fingers move in parallel vertically -> adjust Z depth (closer/further)
+                    float avgDeltaY = (t0.deltaPosition.y + t1.deltaPosition.y) * 0.5f;
+                    bool isParallelZDrag = Mathf.Abs(deltaPinch) < 14f && Mathf.Abs(angle) < 8f && Mathf.Abs(avgDeltaY) > 2.5f;
+
+                    if (isParallelZDrag && placementMode == PlacementMode.FreeMovable)
+                    {
+                        // Parallel 2-finger drag pushes model along camera Z (depth in 3D)
+                        float zStep = avgDeltaY * 0.004f;
+                        transform.position += mainCamera.transform.forward * zStep;
+                        dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
+                        dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
+                    }
+                    else
+                    {
+                        // Pinch to scale
+                        if (Mathf.Abs(deltaPinch) > 1.5f)
+                        {
+                            ApplyPinchScale(deltaPinch * pinchSensitivity);
+                        }
+
+                        // Twist rotation around Y axis
+                        if (Mathf.Abs(angle) > 0.5f)
+                        {
+                            transform.Rotate(Vector3.up, -angle * rotationSensitivity, Space.World);
+                        }
+                    }
+
+                    previousPinchDistance = currentPinchDist;
                 }
             }
         }
@@ -286,11 +380,22 @@ namespace ContactorAR.AR
         {
             Vector3 mousePos = Input.mousePosition;
 
-            // Scroll wheel pinch scale
+            // Scroll wheel for distance in Z (or scale with Ctrl held)
             float scroll = Input.GetAxis("Mouse ScrollWheel");
             if (Mathf.Abs(scroll) > 0.01f)
             {
-                ApplyPinchScale(scroll * 12.0f);
+                if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
+                {
+                    ApplyPinchScale(scroll * 12.0f);
+                }
+                else if (placementMode == PlacementMode.FreeMovable)
+                {
+                    // Scroll wheel moves in depth (Z plane)
+                    float zStep = scroll * 1.5f;
+                    transform.position += mainCamera.transform.forward * zStep;
+                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 8.0f);
+                    dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
+                }
             }
 
             // Right click drag to rotate
@@ -322,7 +427,7 @@ namespace ContactorAR.AR
             Ray ray = mainCamera.ScreenPointToRay(screenPos);
             if (Physics.Raycast(ray, out RaycastHit hit, 50f, interactableMask))
             {
-                // Priority 1: Check if clicked on a wire connector end
+                // Priority 1: Wire connector end
                 WireConnectorEnd wireEnd = hit.collider.GetComponent<WireConnectorEnd>();
                 if (wireEnd != null)
                 {
@@ -331,7 +436,7 @@ namespace ContactorAR.AR
                     return;
                 }
 
-                // Priority 2: Check if clicked on the MCB pivot lever
+                // Priority 2: MCB pivot lever
                 MCBPivotLever lever = hit.collider.GetComponentInParent<MCBPivotLever>();
                 if (lever != null)
                 {
@@ -343,14 +448,16 @@ namespace ContactorAR.AR
                 // Priority 3: Breaker model body clicked
                 if (hit.transform == transform || hit.transform.IsChildOf(transform))
                 {
-                    // In Locked or Hanging mode, ignore body dragging completely so user can inspect or touch without accidental movement
                     if (placementMode == PlacementMode.Locked || placementMode == PlacementMode.HangingAtCoordinates)
                     {
                         return;
                     }
 
                     isInteractingWithModel = true;
-                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 4.0f);
+                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
+                    dragPlane = new Plane(-mainCamera.transform.forward, hit.point);
+                    // Store offset between transform.position and hit.point so the model does not jump upon touch
+                    dragOffset = transform.position - hit.point;
                 }
             }
         }
@@ -377,15 +484,13 @@ namespace ContactorAR.AR
             if (isInteractingWithModel && placementMode == PlacementMode.FreeMovable)
             {
                 Ray ray = mainCamera.ScreenPointToRay(screenPos);
-                Plane currentPlane = new Plane(-mainCamera.transform.forward, mainCamera.transform.position + mainCamera.transform.forward * dragDistance);
-                if (currentPlane.Raycast(ray, out float enter) && enter > 0.05f)
+                if (dragPlane.Raycast(ray, out float enter) && enter > 0.05f)
                 {
-                    transform.position = ray.GetPoint(enter);
+                    transform.position = ray.GetPoint(enter) + dragOffset;
                 }
                 else
                 {
-                    // Strictly keep in front of camera
-                    transform.position = ray.GetPoint(dragDistance);
+                    transform.position = ray.GetPoint(dragDistance) + dragOffset;
                 }
             }
         }

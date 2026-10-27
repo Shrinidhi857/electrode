@@ -74,17 +74,53 @@ namespace ContactorAR.AR
             if (placementReticle != null)
                 placementReticle.SetActive(false);
 
+            // Suppress plane visualizations now and whenever new planes are detected
+            SuppressPlaneVisuals();
+            if (arPlaneManager != null)
+                arPlaneManager.planesChanged += OnPlanesChanged;
+
 #if UNITY_EDITOR
-            // Editor: Place model at a default position in front of scene view camera
             arActive = false;
             if (!modelPlaced && contactorPrefab != null && tapToPlace)
             {
-                // Editor fallback: auto-place at origin
                 PlaceModelAt(Vector3.forward * 1.0f, Quaternion.Euler(0, 180, 0));
             }
 #else
             arActive = true;
 #endif
+        }
+
+        private void OnDestroy()
+        {
+            if (arPlaneManager != null)
+                arPlaneManager.planesChanged -= OnPlanesChanged;
+        }
+
+        private void OnPlanesChanged(ARPlanesChangedEventArgs args)
+        {
+            // Disable renderers on any newly added plane
+            foreach (var plane in args.added)
+            {
+                DisablePlaneRenderers(plane.gameObject);
+            }
+        }
+
+        private static void DisablePlaneRenderers(GameObject go)
+        {
+            if (go == null) return;
+            foreach (MeshRenderer mr in go.GetComponentsInChildren<MeshRenderer>(true))
+                mr.enabled = false;
+            foreach (LineRenderer lr in go.GetComponentsInChildren<LineRenderer>(true))
+                lr.enabled = false;
+        }
+
+        private void SuppressPlaneVisuals()
+        {
+            if (arPlaneManager == null) return;
+            foreach (var plane in arPlaneManager.trackables)
+            {
+                DisablePlaneRenderers(plane.gameObject);
+            }
         }
 
         private void Update()

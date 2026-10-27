@@ -25,11 +25,11 @@ public class WireDragController : MonoBehaviour
     [SerializeField] private float snapRadiusPx = 50f;
 
     [Header("Wire Geometry (Meters)")]
-    [Tooltip("Radius of the cylindrical wire in world meters.")]
-    [SerializeField] private float wireRadius = 0.600f;
+    [Tooltip("Radius of the cylindrical wire in world meters (10-15x thicker than original 3mm -> 0.04m).")]
+    [SerializeField] private float wireRadius = 0.04f;
 
     [Tooltip("Radius of the end spheres in world meters.")]
-    [SerializeField] private float endSphereRadius = 0.090f;
+    [SerializeField] private float endSphereRadius = 0.06f;
 
     [Tooltip("Length of the straight stub leaving each terminal in world meters (~0.02 = 2cm).")]
     [SerializeField] private float stub = 0.02f;
@@ -42,6 +42,13 @@ public class WireDragController : MonoBehaviour
     private TerminalPort startTerminal;
     private TerminalPort snappedTerminal;
     private bool isDraggingWire = false;
+
+    private void Awake()
+    {
+        // Enforce 10-15x thicker wire: if serialized value was thin (< 0.02m), upgrade to 0.04m
+        if (wireRadius < 0.02f) wireRadius = 0.04f;
+        if (endSphereRadius < 0.03f) endSphereRadius = 0.06f;
+    }
 
     private void Start()
     {

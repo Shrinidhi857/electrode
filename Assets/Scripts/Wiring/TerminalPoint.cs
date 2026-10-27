@@ -173,6 +173,16 @@ namespace ContactorAR.Wiring
         }
 
         /// <summary>
+        /// Clears any connected wire end and resets electrical state (useful when duplicating/cloning).
+        /// </summary>
+        public void ResetConnection()
+        {
+            connectedEnd = null;
+            SetElectricalState(false, 0f, "");
+            SetHighlight(false);
+        }
+
+        /// <summary>
         /// Sets voltage and energization status from the circuit simulation.
         /// </summary>
         public void SetElectricalState(bool energized, float volt, string phase)

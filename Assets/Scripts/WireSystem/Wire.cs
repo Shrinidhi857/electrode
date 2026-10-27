@@ -19,11 +19,11 @@ public class Wire : MonoBehaviour
     [Tooltip("Color tint applied to the wire.")]
     public Color wireColor = new Color(0.92f, 0.22f, 0.22f, 1f);
 
-    [Tooltip("Radius of the cylindrical wire segments in world meters.")]
-    public float wireRadius = 0.600f;
+    [Tooltip("Radius of the cylindrical wire segments in world meters (10-15x thicker than default 3mm -> 0.04m).")]
+    public float wireRadius = 0.04f;
 
     [Tooltip("Radius of the end spheres sitting on terminals in world meters.")]
-    public float endSphereRadius = 0.090f;
+    public float endSphereRadius = 0.06f;
 
     [Tooltip("Straight stub distance leaving terminals before the first 90-degree turn in meters (~2cm).")]
     public float stub = 0.02f;
@@ -82,8 +82,8 @@ public class Wire : MonoBehaviour
     {
         wireMaterial = mat;
         wireColor = col;
-        wireRadius = radius;
-        endSphereRadius = endRadius;
+        wireRadius = Mathf.Max(radius, 0.035f);
+        endSphereRadius = Mathf.Max(endRadius, 0.05f);
         stub = stubLen;
 
         ApplyPropertyBlockToAll();
@@ -100,7 +100,11 @@ public class Wire : MonoBehaviour
         endTerminal = null;
         isConnected = false;
 
-        List<Vector3> points = WireRouter.Route(from.Position, from.ExitDir, worldPoint, Vector3.zero, stub);
+        List<Vector3> points = WireRouter.Route(
+            from.Position, from.ExitDir,
+            worldPoint, Vector3.zero,
+            stub,
+            GetBodyBounds(from));
         UpdateVisuals(points);
     }
 
@@ -115,7 +119,12 @@ public class Wire : MonoBehaviour
         endTerminal = to;
         isConnected = false;
 
-        List<Vector3> points = WireRouter.Route(from.Position, from.ExitDir, to.Position, to.ExitDir, stub);
+        List<Vector3> points = WireRouter.Route(
+            from.Position, from.ExitDir,
+            to.Position, to.ExitDir,
+            stub,
+            GetBodyBounds(from),
+            GetBodyBounds(to));
         UpdateVisuals(points);
     }
 
@@ -138,7 +147,12 @@ public class Wire : MonoBehaviour
         lastEndPos = endTerminal.Position;
         lastEndDir = endTerminal.ExitDir;
 
-        List<Vector3> points = WireRouter.Route(startTerminal.Position, startTerminal.ExitDir, endTerminal.Position, endTerminal.ExitDir, stub);
+        List<Vector3> points = WireRouter.Route(
+            startTerminal.Position, startTerminal.ExitDir,
+            endTerminal.Position, endTerminal.ExitDir,
+            stub,
+            GetBodyBounds(startTerminal),
+            GetBodyBounds(endTerminal));
         UpdateVisuals(points);
 
         OnWireConnected?.Invoke(startTerminal, endTerminal, this);
@@ -169,7 +183,12 @@ public class Wire : MonoBehaviour
             lastEndPos = curEndPos;
             lastEndDir = curEndDir;
 
-            List<Vector3> points = WireRouter.Route(curStartPos, curStartDir, curEndPos, curEndDir, stub);
+            List<Vector3> points = WireRouter.Route(
+                curStartPos, curStartDir,
+                curEndPos, curEndDir,
+                stub,
+                GetBodyBounds(startTerminal),
+                GetBodyBounds(endTerminal));
             UpdateVisuals(points);
         }
     }
@@ -189,6 +208,33 @@ public class Wire : MonoBehaviour
 
             OnWireDisconnected?.Invoke(startTerminal, endTerminal, this);
         }
+    }
+
+    /// <summary>
+    /// Returns the combined world-space renderer bounds of the parent component body
+    /// that owns the terminal. Walks up the hierarchy to find the root model.
+    /// Returns null if no renderers are found.
+    /// </summary>
+    private static Bounds? GetBodyBounds(TerminalPort terminal)
+    {
+        if (terminal == null) return null;
+
+        // Walk up from the terminal to find the first ancestor with renderers
+        // (the contactor/breaker root usually has the bulk of the geometry)
+        Transform t = terminal.transform.parent;
+        while (t != null)
+        {
+            Renderer[] rends = t.GetComponentsInChildren<Renderer>();
+            if (rends != null && rends.Length > 0)
+            {
+                Bounds combined = rends[0].bounds;
+                for (int i = 1; i < rends.Length; i++)
+                    combined.Encapsulate(rends[i].bounds);
+                return combined;
+            }
+            t = t.parent;
+        }
+        return null;
     }
 
     /// <summary>

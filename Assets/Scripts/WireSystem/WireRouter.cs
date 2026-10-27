@@ -14,9 +14,17 @@ public static class WireRouter
     /// <param name="startDir">Start terminal exit direction.</param>
     /// <param name="end">End terminal world position (or free drag target).</param>
     /// <param name="endDir">End terminal exit direction (Vector3.zero for free dragging end).</param>
-    /// <param name="stub">Distance to travel straight out of a terminal before turning.</param>
+    /// <param name="stub">Minimum distance to travel straight out of a terminal before turning.</param>
+    /// <param name="startBodyBounds">World-space bounds of the body the start terminal belongs to.
+    /// When set the stub is extended until the wire clears the body surface along the exit direction.</param>
+    /// <param name="endBodyBounds">World-space bounds of the body the end terminal belongs to.</param>
     /// <returns>List of axis-aligned waypoints with collinear and duplicate points removed.</returns>
-    public static List<Vector3> Route(Vector3 start, Vector3 startDir, Vector3 end, Vector3 endDir, float stub)
+    public static List<Vector3> Route(
+        Vector3 start, Vector3 startDir,
+        Vector3 end,   Vector3 endDir,
+        float stub,
+        Bounds? startBodyBounds = null,
+        Bounds? endBodyBounds   = null)
     {
         List<Vector3> rawPoints = new List<Vector3>(16);
 
@@ -24,7 +32,9 @@ public static class WireRouter
         Vector3 sDir = SnapToWorldAxis(startDir);
         if (sDir == Vector3.zero) sDir = Vector3.up;
 
-        Vector3 sStub = start + sDir * stub;
+        // 2. Body-clearance: push the stub far enough to exit the component body
+        float sStubDist = BodyClearanceStub(start, sDir, stub, startBodyBounds);
+        Vector3 sStub = start + sDir * sStubDist;
         rawPoints.Add(start);
         rawPoints.Add(sStub);
 
@@ -37,7 +47,10 @@ public static class WireRouter
 
         Vector3 eDir = SnapToWorldAxis(endDir);
         if (eDir == Vector3.zero) eDir = -sDir;
-        Vector3 eStub = end + eDir * stub;
+
+        // Body-clearance for end terminal
+        float eStubDist = BodyClearanceStub(end, eDir, stub, endBodyBounds);
+        Vector3 eStub = end + eDir * eStubDist;
 
         // Evaluate orientation between the two exit directions
         float dot = Vector3.Dot(sDir, eDir);
@@ -67,6 +80,37 @@ public static class WireRouter
 
         return FilterCollinearPoints(rawPoints);
     }
+
+    /// <summary>
+    /// Computes the perpendicular clearance stub distance so the wire exits cleanly past the component body.
+    /// Returns max(stub, surfaceDistance + stub) along sDir from the terminal position.
+    /// </summary>
+    private static float BodyClearanceStub(Vector3 terminal, Vector3 dir, float minStub, Bounds? bodyBounds)
+    {
+        if (!bodyBounds.HasValue) return minStub;
+
+        Bounds b = bodyBounds.Value;
+        // Find the extent of the bounds along the exit direction from the terminal
+        // Project all 8 corners onto dir and find the farthest one ahead of the terminal
+        Vector3 c = b.center;
+        Vector3 e = b.extents;
+
+        float maxProj = float.NegativeInfinity;
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = c + new Vector3(
+                (i & 1) == 0 ? -e.x : e.x,
+                (i & 2) == 0 ? -e.y : e.y,
+                (i & 4) == 0 ? -e.z : e.z);
+            float proj = Vector3.Dot(corner - terminal, dir);
+            if (proj > maxProj) maxProj = proj;
+        }
+
+        // If the body extends ahead of the terminal along dir, clear it plus the minimum stub
+        float clearance = maxProj > 0f ? maxProj + minStub : minStub;
+        return Mathf.Max(clearance, minStub);
+    }
+
 
     /// <summary>
     /// Snaps a 3D vector to the single nearest world axis (+/- X, +/- Y, or +/- Z).
