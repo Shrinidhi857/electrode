@@ -70,7 +70,7 @@ namespace ContactorAR.Simulation
             WireSystem.WireManager.OnWireDisconnected -= OnWireConnectionChanged;
         }
 
-        private void OnWireConnectionChanged(WireSystem.Terminal a, WireSystem.Terminal b, WireSystem.Wire w)
+        private void OnWireConnectionChanged(TerminalPort a, TerminalPort b, Wire w)
         {
             EvaluateCircuit();
         }
@@ -214,7 +214,7 @@ namespace ContactorAR.Simulation
                 var activeSystemWires = WireSystem.WireManager.Instance.ActiveWires;
                 for (int i = 0; i < activeSystemWires.Count; i++)
                 {
-                    WireSystem.Wire sysWire = activeSystemWires[i];
+                    Wire sysWire = activeSystemWires[i];
                     if (sysWire == null || !sysWire.IsConnected) continue;
 
                     TerminalPoint termA = sysWire.StartTerminal != null ? sysWire.StartTerminal.GetComponent<TerminalPoint>() : null;

@@ -1,0 +1,38 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ce09d9526f5769940bbde6a06601c0b5, type: 3}
+  m_Name: WireSettings
+  m_EditorClassIdentifier: ContactorAR.Runtime::WireSystem.WireSettings
+  lineWidth: 0.0025
+  constantScreenSpaceThickness: 0
+  screenSpacePixelWidth: 3.5
+  wireColorPalette:
+  - {r: 0.92, g: 0.22, b: 0.22, a: 1}
+  - {r: 0.95, g: 0.85, b: 0.15, a: 1}
+  - {r: 0.2, g: 0.55, b: 0.95, a: 1}
+  - {r: 0.22, g: 0.22, b: 0.25, a: 1}
+  - {r: 0.25, g: 0.85, b: 0.35, a: 1}
+  draggingOpacity: 0.55
+  snapInRadius: 0.04
+  snapOutRadiusMultiplier: 1.35
+  snapLerpDuration: 0.08
+  stubLength: 0.02
+  roundCorners: 0
+  cornerRadius: 0.004
+  laneOffset: 0.006
+  handleVisibleRadius: 0.004
+  handleColliderRadius: 0.018
+  preventSelfConnection: 1
+  preventDuplicateConnection: 1
+  inputMustConnectToOutput: 0
+  revertOnInvalidDrop: 0
+  unlitLineMaterial: {fileID: 0}

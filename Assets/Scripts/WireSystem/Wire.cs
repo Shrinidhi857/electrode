@@ -1,270 +1,352 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace WireSystem
+/// <summary>
+/// Represents a routable 3D wire connecting two TerminalPorts.
+/// Generates orthogonal visual segments using pooled Unity primitives (cylinders and spheres)
+/// with stripped colliders, handles live previewing, and re-routes automatically when terminals move in AR.
+/// </summary>
+public class Wire : MonoBehaviour
 {
-    /// <summary>
-    /// Represents an interactive 3D orthogonal electrical wire connecting two Terminals.
-    /// Manages LineRenderer visual styling, endpoint handles, live LateUpdate re-routing,
-    /// and connected vs dragging opacity transitions.
-    /// </summary>
-    [RequireComponent(typeof(LineRenderer))]
-    public class Wire : MonoBehaviour
+    [Header("Connected Terminals")]
+    [SerializeField] private TerminalPort startTerminal;
+    [SerializeField] private TerminalPort endTerminal;
+
+    [Header("Visual Configuration")]
+    [Tooltip("Material applied to all wire cylinders and spheres. Must be assigned in the Inspector.")]
+    public Material wireMaterial;
+
+    [Tooltip("Color tint applied to the wire.")]
+    public Color wireColor = new Color(0.92f, 0.22f, 0.22f, 1f);
+
+    [Tooltip("Radius of the cylindrical wire segments in world meters.")]
+    public float wireRadius = 0.600f;
+
+    [Tooltip("Radius of the end spheres sitting on terminals in world meters.")]
+    public float endSphereRadius = 0.090f;
+
+    [Tooltip("Straight stub distance leaving terminals before the first 90-degree turn in meters (~2cm).")]
+    public float stub = 0.02f;
+
+    // State
+    private bool isConnected = false;
+    private Vector3 lastStartPos;
+    private Vector3 lastStartDir;
+    private Vector3 lastEndPos;
+    private Vector3 lastEndDir;
+
+    // Primitives pooling
+    private readonly List<GameObject> cylinderPool = new List<GameObject>();
+    private readonly List<GameObject> cornerSpherePool = new List<GameObject>();
+    private GameObject startSphere;
+    private GameObject endSphere;
+    private MaterialPropertyBlock propertyBlock;
+
+    // Global registry & connection events
+    public static readonly List<Wire> AllWires = new List<Wire>();
+    public static event System.Action<TerminalPort, TerminalPort, Wire> OnWireConnected;
+    public static event System.Action<TerminalPort, TerminalPort, Wire> OnWireDisconnected;
+
+    public TerminalPort StartTerminal => startTerminal;
+    public TerminalPort EndTerminal => endTerminal;
+    public bool IsConnected => isConnected;
+
+    private void Awake()
     {
-        [Header("Endpoints")]
-        [SerializeField] private WireEndpoint startEndpoint;
-        [SerializeField] private WireEndpoint endEndpoint;
+        // Enforce identity transform at scene root
+        transform.SetParent(null);
+        transform.position = Vector3.zero;
+        transform.rotation = Quaternion.identity;
+        transform.localScale = Vector3.one;
 
-        [Header("Configuration")]
-        [SerializeField] private WireSettings settings;
-        [SerializeField] private Color wireColor = new Color(0.92f, 0.22f, 0.22f, 1f);
-        [SerializeField] private int laneIndex = 0;
+        propertyBlock = new MaterialPropertyBlock();
+    }
 
-        [Header("Reference Frame")]
-        [Tooltip("Transform defining the local coordinate space for orthogonal routing (typically Four-Pole-Breaker-final).")]
-        [SerializeField] private Transform modelRoot;
-
-        private LineRenderer lineRenderer;
-        private Material lineMatInstance;
-        private readonly List<Vector3> pathBuffer = new List<Vector3>(32);
-        private Camera cachedCamera;
-        private bool isDraggingVisual = false;
-
-        public WireEndpoint StartEndpoint => startEndpoint;
-        public WireEndpoint EndEndpoint => endEndpoint;
-        public Terminal StartTerminal => startEndpoint != null ? startEndpoint.AttachedTerminal : null;
-        public Terminal EndTerminal => endEndpoint != null ? endEndpoint.AttachedTerminal : null;
-        public bool IsConnected => startEndpoint != null && startEndpoint.IsConnected &&
-                                   endEndpoint != null && endEndpoint.IsConnected;
-        public bool IsDragging => (startEndpoint != null && startEndpoint.IsDragging) ||
-                                  (endEndpoint != null && endEndpoint.IsDragging);
-        public WireSettings Settings => settings;
-        public Color WireColor => wireColor;
-        public int LaneIndex
+    private void OnEnable()
+    {
+        if (!AllWires.Contains(this))
         {
-            get => laneIndex;
-            set => laneIndex = value;
+            AllWires.Add(this);
+        }
+    }
+
+    private void OnDisable()
+    {
+        AllWires.Remove(this);
+    }
+
+    /// <summary>
+    /// Configures the wire styling parameters.
+    /// </summary>
+    public void ConfigureVisuals(Material mat, Color col, float radius, float endRadius, float stubLen)
+    {
+        wireMaterial = mat;
+        wireColor = col;
+        wireRadius = radius;
+        endSphereRadius = endRadius;
+        stub = stubLen;
+
+        ApplyPropertyBlockToAll();
+    }
+
+    /// <summary>
+    /// Updates live preview during dragging towards a free world coordinate.
+    /// </summary>
+    public void ShowFree(TerminalPort from, Vector3 worldPoint)
+    {
+        if (from == null) return;
+
+        startTerminal = from;
+        endTerminal = null;
+        isConnected = false;
+
+        List<Vector3> points = WireRouter.Route(from.Position, from.ExitDir, worldPoint, Vector3.zero, stub);
+        UpdateVisuals(points);
+    }
+
+    /// <summary>
+    /// Updates live preview when snapped to a target terminal candidate.
+    /// </summary>
+    public void ShowSnapped(TerminalPort from, TerminalPort to)
+    {
+        if (from == null || to == null) return;
+
+        startTerminal = from;
+        endTerminal = to;
+        isConnected = false;
+
+        List<Vector3> points = WireRouter.Route(from.Position, from.ExitDir, to.Position, to.ExitDir, stub);
+        UpdateVisuals(points);
+    }
+
+    /// <summary>
+    /// Commits the permanent connection between two terminals.
+    /// </summary>
+    public void Connect(TerminalPort from, TerminalPort to)
+    {
+        if (from == null || to == null) return;
+
+        startTerminal = from;
+        endTerminal = to;
+        isConnected = true;
+
+        startTerminal.wireCount++;
+        endTerminal.wireCount++;
+
+        lastStartPos = startTerminal.Position;
+        lastStartDir = startTerminal.ExitDir;
+        lastEndPos = endTerminal.Position;
+        lastEndDir = endTerminal.ExitDir;
+
+        List<Vector3> points = WireRouter.Route(startTerminal.Position, startTerminal.ExitDir, endTerminal.Position, endTerminal.ExitDir, stub);
+        UpdateVisuals(points);
+
+        OnWireConnected?.Invoke(startTerminal, endTerminal, this);
+    }
+
+    private void LateUpdate()
+    {
+        if (!isConnected) return;
+
+        // If either terminal GameObject is destroyed, destroy this wire
+        if (startTerminal == null || endTerminal == null)
+        {
+            Destroy(gameObject);
+            return;
         }
 
-        public Transform ModelRoot
+        // Re-route automatically if either terminal moved or rotated (e.g. AR tracking or scene move)
+        Vector3 curStartPos = startTerminal.Position;
+        Vector3 curStartDir = startTerminal.ExitDir;
+        Vector3 curEndPos = endTerminal.Position;
+        Vector3 curEndDir = endTerminal.ExitDir;
+
+        if (curStartPos != lastStartPos || curStartDir != lastStartDir ||
+            curEndPos != lastEndPos || curEndDir != lastEndDir)
         {
-            get => modelRoot;
-            set => modelRoot = value;
+            lastStartPos = curStartPos;
+            lastStartDir = curStartDir;
+            lastEndPos = curEndPos;
+            lastEndDir = curEndDir;
+
+            List<Vector3> points = WireRouter.Route(curStartPos, curStartDir, curEndPos, curEndDir, stub);
+            UpdateVisuals(points);
         }
+    }
 
-        private void Awake()
+    private void OnDestroy()
+    {
+        if (isConnected)
         {
-            EnsureLineRenderer();
-            cachedCamera = Camera.main;
-        }
-
-        private void Start()
-        {
-            if (cachedCamera == null) cachedCamera = Camera.main;
-            ResolveModelRoot();
-        }
-
-        public void Initialize(WireSettings wireSettings, Color color, Transform referenceModelRoot, int lane = 0)
-        {
-            settings = wireSettings;
-            wireColor = color;
-            modelRoot = referenceModelRoot;
-            laneIndex = lane;
-
-            EnsureLineRenderer();
-            EnsureEndpoints();
-
-            if (startEndpoint != null) startEndpoint.Initialize(this, true, settings);
-            if (endEndpoint != null) endEndpoint.Initialize(this, false, settings);
-
-            ApplyStyling();
-            UpdatePath();
-        }
-
-        private void EnsureLineRenderer()
-        {
-            if (lineRenderer == null) lineRenderer = GetComponent<LineRenderer>();
-            if (lineRenderer == null) lineRenderer = gameObject.AddComponent<LineRenderer>();
-
-            lineRenderer.useWorldSpace = true;
-            lineRenderer.alignment = LineAlignment.View;
-            lineRenderer.numCornerVertices = 4;
-            lineRenderer.numCapVertices = 4;
-            lineRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            lineRenderer.receiveShadows = false;
-
-            if (lineMatInstance == null)
+            if (startTerminal != null)
             {
-                Shader unlit = Shader.Find("Universal Render Pipeline/Unlit")
-                            ?? Shader.Find("Sprites/Default")
-                            ?? Shader.Find("Unlit/Color");
-
-                if (unlit != null)
-                {
-                    lineMatInstance = new Material(unlit);
-                    lineRenderer.sharedMaterial = lineMatInstance;
-                }
+                startTerminal.wireCount = Mathf.Max(0, startTerminal.wireCount - 1);
             }
-        }
-
-        private void EnsureEndpoints()
-        {
-            if (startEndpoint == null)
+            if (endTerminal != null)
             {
-                Transform s = transform.Find("StartEndpoint");
-                if (s == null)
-                {
-                    GameObject go = new GameObject("StartEndpoint");
-                    go.transform.SetParent(transform, false);
-                    s = go.transform;
-                }
-                startEndpoint = s.GetComponent<WireEndpoint>();
-                if (startEndpoint == null) startEndpoint = s.gameObject.AddComponent<WireEndpoint>();
-            }
-
-            if (endEndpoint == null)
-            {
-                Transform e = transform.Find("EndEndpoint");
-                if (e == null)
-                {
-                    GameObject go = new GameObject("EndEndpoint");
-                    go.transform.SetParent(transform, false);
-                    e = go.transform;
-                }
-                endEndpoint = e.GetComponent<WireEndpoint>();
-                if (endEndpoint == null) endEndpoint = e.gameObject.AddComponent<WireEndpoint>();
-            }
-        }
-
-        private void ResolveModelRoot()
-        {
-            if (modelRoot != null) return;
-
-            // Try to find breaker root in scene
-            GameObject breaker = GameObject.Find("Four-Pole-Breaker-final");
-            if (breaker != null)
-            {
-                modelRoot = breaker.transform;
-                return;
+                endTerminal.wireCount = Mathf.Max(0, endTerminal.wireCount - 1);
             }
 
-            if (StartTerminal != null)
+            OnWireDisconnected?.Invoke(startTerminal, endTerminal, this);
+        }
+    }
+
+    /// <summary>
+    /// Renders the wire waypoints using pooled cylinders and spheres.
+    /// </summary>
+    private void UpdateVisuals(List<Vector3> points)
+    {
+        if (points == null || points.Count < 2)
+        {
+            HideAllVisuals();
+            return;
+        }
+
+        int pointCount = points.Count;
+        int segmentCount = pointCount - 1;
+        int cornerCount = Mathf.Max(0, pointCount - 2);
+
+        // 1. Start sphere
+        if (startSphere == null)
+        {
+            startSphere = CreatePrimitiveObject(PrimitiveType.Sphere, "StartSphere");
+        }
+        startSphere.SetActive(true);
+        startSphere.transform.position = points[0];
+        startSphere.transform.localScale = Vector3.one * (endSphereRadius * 2f);
+
+        // 2. End sphere
+        if (endSphere == null)
+        {
+            endSphere = CreatePrimitiveObject(PrimitiveType.Sphere, "EndSphere");
+        }
+        endSphere.SetActive(true);
+        endSphere.transform.position = points[pointCount - 1];
+        endSphere.transform.localScale = Vector3.one * (endSphereRadius * 2f);
+
+        // 3. Corner spheres at bends
+        while (cornerSpherePool.Count < cornerCount)
+        {
+            cornerSpherePool.Add(CreatePrimitiveObject(PrimitiveType.Sphere, $"Corner_{cornerSpherePool.Count}"));
+        }
+        for (int i = 0; i < cornerSpherePool.Count; i++)
+        {
+            if (i < cornerCount)
             {
-                modelRoot = StartTerminal.transform.root;
-            }
-            else if (EndTerminal != null)
-            {
-                modelRoot = EndTerminal.transform.root;
+                cornerSpherePool[i].SetActive(true);
+                cornerSpherePool[i].transform.position = points[i + 1];
+                cornerSpherePool[i].transform.localScale = Vector3.one * (wireRadius * 2f);
             }
             else
             {
-                modelRoot = transform;
+                cornerSpherePool[i].SetActive(false);
             }
         }
 
-        public void ApplyStyling()
+        // 4. Cylinders per segment
+        while (cylinderPool.Count < segmentCount)
         {
-            if (lineRenderer == null) EnsureLineRenderer();
-
-            float width = settings != null ? settings.lineWidth : 0.0025f;
-            lineRenderer.startWidth = width;
-            lineRenderer.endWidth = width;
-
-            UpdateVisualColor();
-
-            if (startEndpoint != null) startEndpoint.ApplySettings(settings);
-            if (endEndpoint != null) endEndpoint.ApplySettings(settings);
+            cylinderPool.Add(CreatePrimitiveObject(PrimitiveType.Cylinder, $"Cylinder_{cylinderPool.Count}"));
         }
-
-        public void SetDraggingVisualState(bool dragging)
+        for (int i = 0; i < cylinderPool.Count; i++)
         {
-            if (isDraggingVisual == dragging) return;
-            isDraggingVisual = dragging;
-            UpdateVisualColor();
-        }
-
-        private void UpdateVisualColor()
-        {
-            float alpha = isDraggingVisual ? (settings != null ? settings.draggingOpacity : 0.55f) : 1.0f;
-            Color c = wireColor;
-            c.a = alpha;
-
-            if (lineMatInstance != null)
+            if (i < segmentCount)
             {
-                lineMatInstance.color = c;
-            }
+                Vector3 pA = points[i];
+                Vector3 pB = points[i + 1];
+                float length = Vector3.Distance(pA, pB);
 
-            if (startEndpoint != null) startEndpoint.SetVisualColor(c, alpha);
-            if (endEndpoint != null) endEndpoint.SetVisualColor(c, alpha);
-        }
-
-        private void LateUpdate()
-        {
-            if (startEndpoint == null || endEndpoint == null) return;
-
-            if (settings != null && settings.constantScreenSpaceThickness)
-            {
-                UpdateConstantScreenSpaceWidth();
-            }
-
-            SetDraggingVisualState(IsDragging);
-            UpdatePath();
-        }
-
-        private void UpdateConstantScreenSpaceWidth()
-        {
-            if (cachedCamera == null) cachedCamera = Camera.main;
-            if (cachedCamera == null || lineRenderer == null) return;
-
-            Vector3 midPoint = (startEndpoint.Position + endEndpoint.Position) * 0.5f;
-            float dist = Vector3.Distance(cachedCamera.transform.position, midPoint);
-
-            // Screen pixel width to world width at dist
-            float screenWorldWidth = (settings.screenSpacePixelWidth / Screen.height) * (2f * dist * Mathf.Tan(cachedCamera.fieldOfView * 0.5f * Mathf.Deg2Rad));
-            lineRenderer.startWidth = screenWorldWidth;
-            lineRenderer.endWidth = screenWorldWidth;
-        }
-
-        /// <summary>
-        /// Recalculates the orthogonal path waypoints and applies them to the LineRenderer.
-        /// </summary>
-        public void UpdatePath()
-        {
-            if (startEndpoint == null || endEndpoint == null) return;
-            if (modelRoot == null) ResolveModelRoot();
-
-            Vector3 startPos = startEndpoint.Position;
-            Vector3 startExit = startEndpoint.ExitNormal;
-
-            Vector3 endPos = endEndpoint.Position;
-            Vector3 endExit = endEndpoint.ExitNormal;
-
-            WireRouter.CalculateOrthogonalPath(
-                startPos,
-                startExit,
-                endPos,
-                endExit,
-                modelRoot,
-                settings,
-                laneIndex,
-                pathBuffer);
-
-            if (lineRenderer != null)
-            {
-                lineRenderer.positionCount = pathBuffer.Count;
-                for (int i = 0; i < pathBuffer.Count; i++)
+                if (length > 0.0001f)
                 {
-                    lineRenderer.SetPosition(i, pathBuffer[i]);
+                    cylinderPool[i].SetActive(true);
+                    cylinderPool[i].transform.position = (pA + pB) * 0.5f;
+                    cylinderPool[i].transform.up = (pB - pA).normalized;
+                    cylinderPool[i].transform.localScale = new Vector3(wireRadius * 2f, length * 0.5f, wireRadius * 2f);
+                }
+                else
+                {
+                    cylinderPool[i].SetActive(false);
                 }
             }
+            else
+            {
+                cylinderPool[i].SetActive(false);
+            }
+        }
+    }
+
+    private void HideAllVisuals()
+    {
+        if (startSphere != null) startSphere.SetActive(false);
+        if (endSphere != null) endSphere.SetActive(false);
+        for (int i = 0; i < cornerSpherePool.Count; i++)
+        {
+            if (cornerSpherePool[i] != null) cornerSpherePool[i].SetActive(false);
+        }
+        for (int i = 0; i < cylinderPool.Count; i++)
+        {
+            if (cylinderPool[i] != null) cylinderPool[i].SetActive(false);
+        }
+    }
+
+    private GameObject CreatePrimitiveObject(PrimitiveType type, string primitiveName)
+    {
+        GameObject go = GameObject.CreatePrimitive(type);
+        go.name = primitiveName;
+
+        // Primitives MUST not have colliders
+        Collider col = go.GetComponent<Collider>();
+        if (col != null)
+        {
+            if (Application.isPlaying)
+            {
+                Destroy(col);
+            }
+            else
+            {
+                DestroyImmediate(col);
+            }
         }
 
-        private void OnDestroy()
+        go.transform.SetParent(transform, false);
+
+        MeshRenderer mr = go.GetComponent<MeshRenderer>();
+        if (mr != null)
         {
-            if (lineMatInstance != null)
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+            if (wireMaterial != null)
             {
-                Destroy(lineMatInstance);
+                mr.sharedMaterial = wireMaterial;
             }
+            ApplyPropertyBlock(mr);
+        }
+
+        return go;
+    }
+
+    private void ApplyPropertyBlock(MeshRenderer mr)
+    {
+        if (mr == null) return;
+        if (propertyBlock == null) propertyBlock = new MaterialPropertyBlock();
+
+        mr.GetPropertyBlock(propertyBlock);
+        propertyBlock.SetColor("_BaseColor", wireColor);
+        propertyBlock.SetColor("_Color", wireColor);
+        mr.SetPropertyBlock(propertyBlock);
+    }
+
+    private void ApplyPropertyBlockToAll()
+    {
+        if (startSphere != null) ApplyPropertyBlock(startSphere.GetComponent<MeshRenderer>());
+        if (endSphere != null) ApplyPropertyBlock(endSphere.GetComponent<MeshRenderer>());
+        for (int i = 0; i < cornerSpherePool.Count; i++)
+        {
+            if (cornerSpherePool[i] != null) ApplyPropertyBlock(cornerSpherePool[i].GetComponent<MeshRenderer>());
+        }
+        for (int i = 0; i < cylinderPool.Count; i++)
+        {
+            if (cylinderPool[i] != null) ApplyPropertyBlock(cylinderPool[i].GetComponent<MeshRenderer>());
         }
     }
 }

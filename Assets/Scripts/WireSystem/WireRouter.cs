@@ -1,229 +1,299 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace WireSystem
+/// <summary>
+/// Static orthogonal (Lucidchart-style) 3D wire router.
+/// Computes strictly axis-aligned (90-degree elbows) paths between terminals or to a free drag target.
+/// </summary>
+public static class WireRouter
 {
     /// <summary>
-    /// Pure static orthogonal routing engine.
-    /// Replicates Lucidchart / draw.io right-angle elbow routing.
-    /// Computes strictly axis-aligned (H-V-H or V-H-V) paths evaluated in the breaker's local coordinate space,
-    /// ensuring wires remain perfectly aligned and non-diagonal even when the model moves, rotates, or scales in AR.
+    /// Computes a list of axis-aligned 3D points routing from start to end.
     /// </summary>
-    public static class WireRouter
+    /// <param name="start">Start terminal world position.</param>
+    /// <param name="startDir">Start terminal exit direction.</param>
+    /// <param name="end">End terminal world position (or free drag target).</param>
+    /// <param name="endDir">End terminal exit direction (Vector3.zero for free dragging end).</param>
+    /// <param name="stub">Distance to travel straight out of a terminal before turning.</param>
+    /// <returns>List of axis-aligned waypoints with collinear and duplicate points removed.</returns>
+    public static List<Vector3> Route(Vector3 start, Vector3 startDir, Vector3 end, Vector3 endDir, float stub)
     {
-        // Reusable static buffers to ensure zero GC allocations per frame during AR interaction
-        private static readonly List<Vector3> s_LocalWaypoints = new List<Vector3>(16);
-        private static readonly List<Vector3> s_FilteredPoints = new List<Vector3>(16);
-        private static readonly List<Vector3> s_FilletBuffer = new List<Vector3>(32);
+        List<Vector3> rawPoints = new List<Vector3>(16);
 
-        /// <summary>
-        /// Computes the list of world-space positions for the orthogonal wire path.
-        /// </summary>
-        /// <param name="startPos">Start world coordinate.</param>
-        /// <param name="startExitDir">Start outward exit normal in world space.</param>
-        /// <param name="endPos">End world coordinate.</param>
-        /// <param name="endExitDir">End outward exit normal in world space.</param>
-        /// <param name="modelRoot">Reference transform (e.g. Four-Pole-Breaker-final) defining local axes.</param>
-        /// <param name="settings">Routing settings (stub length, corner radius, lane offset).</param>
-        /// <param name="laneIndex">Unique lane index to stagger parallel wires between identical terminal rows.</param>
-        /// <param name="outputWorldPoints">Output buffer where calculated world points are written.</param>
-        public static void CalculateOrthogonalPath(
-            Vector3 startPos,
-            Vector3 startExitDir,
-            Vector3 endPos,
-            Vector3 endExitDir,
-            Transform modelRoot,
-            WireSettings settings,
-            int laneIndex,
-            List<Vector3> outputWorldPoints)
+        // 1. Snap exit directions to nearest world axis (+/- X, +/- Y, or +/- Z)
+        Vector3 sDir = SnapToWorldAxis(startDir);
+        if (sDir == Vector3.zero) sDir = Vector3.up;
+
+        Vector3 sStub = start + sDir * stub;
+        rawPoints.Add(start);
+        rawPoints.Add(sStub);
+
+        // Case (d): endDir == Vector3.zero means a free end while dragging, with no end stub
+        if (endDir == Vector3.zero)
         {
-            outputWorldPoints.Clear();
-            s_LocalWaypoints.Clear();
-            s_FilteredPoints.Clear();
+            RouteFreeEnd(sStub, sDir, end, stub, rawPoints);
+            return FilterCollinearPoints(rawPoints);
+        }
 
-            // 1. Transform to reference model's local coordinate space
-            Vector3 lStart = modelRoot != null ? modelRoot.InverseTransformPoint(startPos) : startPos;
-            Vector3 lEnd = modelRoot != null ? modelRoot.InverseTransformPoint(endPos) : endPos;
+        Vector3 eDir = SnapToWorldAxis(endDir);
+        if (eDir == Vector3.zero) eDir = -sDir;
+        Vector3 eStub = end + eDir * stub;
 
-            Vector3 lStartExit = modelRoot != null ? modelRoot.InverseTransformDirection(startExitDir) : startExitDir;
-            Vector3 lEndExit = modelRoot != null ? modelRoot.InverseTransformDirection(endExitDir) : endExitDir;
+        // Evaluate orientation between the two exit directions
+        float dot = Vector3.Dot(sDir, eDir);
+        Vector3 delta = eStub - sStub;
+        float projS = Vector3.Dot(delta, sDir);
 
-            if (lStartExit.sqrMagnitude < 0.001f) lStartExit = Vector3.up;
-            if (lEndExit.sqrMagnitude < 0.001f) lEndExit = (lStart - lEnd).normalized;
+        GetPerpendicularAxes(sDir, out Vector3 perp1, out Vector3 perp2);
 
-            lStartExit.Normalize();
-            lEndExit.Normalize();
+        if (dot < -0.9f && projS > 0.001f)
+        {
+            // Case (b): Terminals facing each other -> elbow at the midpoint
+            RouteFacingMidpoint(sStub, sDir, eStub, projS, perp1, perp2, rawPoints);
+        }
+        else if (dot > 0.9f || (dot < -0.9f && projS <= 0.001f))
+        {
+            // Case (c): Same side or target behind -> U-shaped route out past both terminals, crosses over, comes back
+            RouteUShaped(sStub, sDir, eStub, eDir, dot > 0.9f, stub, perp1, perp2, rawPoints);
+        }
+        else
+        {
+            // Case (a): Different axes -> 3 segments, forward along start axis first if target is in front, else perp axis first
+            RouteDifferentAxes(sStub, sDir, eStub, eDir, projS, rawPoints);
+        }
 
-            float stub = settings != null ? settings.stubLength : 0.02f;
-            float laneOffset = (settings != null ? settings.laneOffset : 0.006f) * laneIndex;
+        rawPoints.Add(eStub);
+        rawPoints.Add(end);
 
-            // 2. Calculate initial stubs leaving the terminals
-            Vector3 lStubA = lStart + lStartExit * stub;
-            Vector3 lStubB = lEnd + lEndExit * stub;
+        return FilterCollinearPoints(rawPoints);
+    }
 
-            s_LocalWaypoints.Add(lStart);
-            s_LocalWaypoints.Add(lStubA);
+    /// <summary>
+    /// Snaps a 3D vector to the single nearest world axis (+/- X, +/- Y, or +/- Z).
+    /// </summary>
+    public static Vector3 SnapToWorldAxis(Vector3 dir)
+    {
+        if (dir.sqrMagnitude < 0.0001f) return Vector3.zero;
 
-            // 3. Connect the two stubs using orthogonal segments (H-V-H or V-H-V)
-            ConnectStubsOrthogonal(lStubA, lStartExit, lStubB, lEndExit, laneOffset, s_LocalWaypoints);
+        float absX = Mathf.Abs(dir.x);
+        float absY = Mathf.Abs(dir.y);
+        float absZ = Mathf.Abs(dir.z);
 
-            s_LocalWaypoints.Add(lStubB);
-            s_LocalWaypoints.Add(lEnd);
+        if (absX >= absY && absX >= absZ)
+        {
+            return new Vector3(Mathf.Sign(dir.x), 0f, 0f);
+        }
+        if (absY >= absX && absY >= absZ)
+        {
+            return new Vector3(0f, Mathf.Sign(dir.y), 0f);
+        }
+        return new Vector3(0f, 0f, Mathf.Sign(dir.z));
+    }
 
-            // 4. Clean up collinear / redundant points
-            FilterCollinearPoints(s_LocalWaypoints, s_FilteredPoints);
+    private static void GetPerpendicularAxes(Vector3 axis, out Vector3 perp1, out Vector3 perp2)
+    {
+        if (Mathf.Abs(axis.x) > 0.5f)
+        {
+            perp1 = Vector3.up;
+            perp2 = Vector3.forward;
+        }
+        else if (Mathf.Abs(axis.y) > 0.5f)
+        {
+            perp1 = Vector3.right;
+            perp2 = Vector3.forward;
+        }
+        else
+        {
+            perp1 = Vector3.right;
+            perp2 = Vector3.up;
+        }
+    }
 
-            // 5. Apply optional rounded corner fillets or sharp joints
-            if (settings != null && settings.roundCorners && settings.cornerRadius > 0.0005f)
+    /// <summary>
+    /// Case (d): Routes to a free dragging point in 3D space with no end stub.
+    /// </summary>
+    private static void RouteFreeEnd(Vector3 sStub, Vector3 sDir, Vector3 target, float stub, List<Vector3> points)
+    {
+        Vector3 delta = target - sStub;
+        float projS = Vector3.Dot(delta, sDir);
+
+        GetPerpendicularAxes(sDir, out Vector3 perp1, out Vector3 perp2);
+
+        if (projS > 0.001f)
+        {
+            // Target is in front along exit direction
+            Vector3 p1 = sStub + sDir * projS;
+            Vector3 p2 = p1 + perp1 * Vector3.Dot(target - p1, perp1);
+            points.Add(p1);
+            points.Add(p2);
+            points.Add(target);
+        }
+        else
+        {
+            // Target is behind or to the side of exit stub
+            Vector3 p1 = sStub + perp1 * Vector3.Dot(target - sStub, perp1);
+            Vector3 p2 = p1 + perp2 * Vector3.Dot(target - p1, perp2);
+            points.Add(p1);
+            points.Add(p2);
+            points.Add(target);
+        }
+    }
+
+    /// <summary>
+    /// Case (b): Facing each other -> midpoint elbow.
+    /// </summary>
+    private static void RouteFacingMidpoint(
+        Vector3 sStub,
+        Vector3 sDir,
+        Vector3 eStub,
+        float projS,
+        Vector3 perp1,
+        Vector3 perp2,
+        List<Vector3> points)
+    {
+        float midDist = projS * 0.5f;
+        Vector3 midPlanePoint = sStub + sDir * midDist;
+
+        Vector3 p1 = midPlanePoint + perp1 * Vector3.Dot(eStub - midPlanePoint, perp1);
+        Vector3 p2 = p1 + perp2 * Vector3.Dot(eStub - p1, perp2);
+
+        points.Add(midPlanePoint);
+        points.Add(p1);
+        points.Add(p2);
+    }
+
+    /// <summary>
+    /// Case (c): Same side or target behind -> U-shaped route out past both terminals, crosses over, comes back.
+    /// </summary>
+    private static void RouteUShaped(
+        Vector3 sStub,
+        Vector3 sDir,
+        Vector3 eStub,
+        Vector3 eDir,
+        bool sameDirection,
+        float stub,
+        Vector3 perp1,
+        Vector3 perp2,
+        List<Vector3> points)
+    {
+        if (sameDirection)
+        {
+            // Both terminals exit in the same direction (e.g. both facing +Y)
+            float sCoord = Vector3.Dot(sStub, sDir);
+            float eCoord = Vector3.Dot(eStub, sDir);
+            float clearCoord = Mathf.Max(sCoord, eCoord) + stub;
+
+            Vector3 p1 = sStub + sDir * (clearCoord - sCoord);
+            Vector3 p2 = p1 + perp1 * Vector3.Dot(eStub - p1, perp1);
+            Vector3 p3 = p2 + perp2 * Vector3.Dot(eStub - p2, perp2);
+
+            points.Add(p1);
+            points.Add(p2);
+            points.Add(p3);
+        }
+        else
+        {
+            // Facing opposite directions but target is behind start terminal (e.g. sDir=+Y, eDir=-Y but eStub is below sStub)
+            float stepOutDist = stub;
+            Vector3 p1 = sStub + sDir * stepOutDist;
+
+            // Pick dominant perpendicular difference to step clear around the sides
+            float d1 = Vector3.Dot(eStub - sStub, perp1);
+            float d2 = Vector3.Dot(eStub - sStub, perp2);
+            Vector3 sideAxis = Mathf.Abs(d1) >= Mathf.Abs(d2) ? perp1 : perp2;
+            float sideDelta = Mathf.Abs(d1) >= Mathf.Abs(d2) ? d1 : d2;
+            if (Mathf.Abs(sideDelta) < 0.001f) sideDelta = stub;
+
+            Vector3 p2 = p1 + sideAxis * sideDelta;
+            Vector3 p3 = p2 + sDir * (Vector3.Dot(eStub, sDir) - Vector3.Dot(p2, sDir));
+
+            points.Add(p1);
+            points.Add(p2);
+            points.Add(p3);
+        }
+    }
+
+    /// <summary>
+    /// Case (a): Different axes -> 3 segments, forward along start axis first if target is in front, else perp axis first.
+    /// </summary>
+    private static void RouteDifferentAxes(
+        Vector3 sStub,
+        Vector3 sDir,
+        Vector3 eStub,
+        Vector3 eDir,
+        float projS,
+        List<Vector3> points)
+    {
+        Vector3 thirdAxis = Vector3.Cross(sDir, eDir).normalized;
+
+        if (projS > 0.001f)
+        {
+            // Target is in front along start axis: go forward along start axis first
+            Vector3 p1 = sStub + sDir * projS;
+            Vector3 p2 = p1 + thirdAxis * Vector3.Dot(eStub - p1, thirdAxis);
+
+            points.Add(p1);
+            points.Add(p2);
+        }
+        else
+        {
+            // Target is behind: go along perpendicular axis first
+            Vector3 p1 = sStub + thirdAxis * Vector3.Dot(eStub - sStub, thirdAxis);
+            Vector3 p2 = p1 + eDir * Vector3.Dot(eStub - p1, eDir);
+
+            points.Add(p1);
+            points.Add(p2);
+        }
+    }
+
+    /// <summary>
+    /// Removes redundant consecutive duplicate and collinear points.
+    /// </summary>
+    public static List<Vector3> FilterCollinearPoints(List<Vector3> points)
+    {
+        if (points == null || points.Count < 2)
+        {
+            return points != null ? new List<Vector3>(points) : new List<Vector3>();
+        }
+
+        // 1. Remove consecutive identical points
+        List<Vector3> noDups = new List<Vector3>(points.Count);
+        for (int i = 0; i < points.Count; i++)
+        {
+            if (noDups.Count == 0 || (points[i] - noDups[noDups.Count - 1]).sqrMagnitude > 1e-8f)
             {
-                s_FilletBuffer.Clear();
-                ApplyCornerFillets(s_FilteredPoints, settings.cornerRadius, s_FilletBuffer);
-
-                for (int i = 0; i < s_FilletBuffer.Count; i++)
-                {
-                    Vector3 worldPt = modelRoot != null ? modelRoot.TransformPoint(s_FilletBuffer[i]) : s_FilletBuffer[i];
-                    outputWorldPoints.Add(worldPt);
-                }
-            }
-            else
-            {
-                // Pure sharp 90-degree orthogonal joints
-                for (int i = 0; i < s_FilteredPoints.Count; i++)
-                {
-                    Vector3 worldPt = modelRoot != null ? modelRoot.TransformPoint(s_FilteredPoints[i]) : s_FilteredPoints[i];
-                    outputWorldPoints.Add(worldPt);
-                }
+                noDups.Add(points[i]);
             }
         }
 
-        /// <summary>
-        /// Selects the cleanest orthogonal 90-degree bridge between the two stubs.
-        /// Evaluates both H-V-H and V-H-V candidates and picks the one minimizing sharp zig-zags.
-        /// </summary>
-        private static void ConnectStubsOrthogonal(
-            Vector3 a,
-            Vector3 exitA,
-            Vector3 b,
-            Vector3 exitB,
-            float laneOffset,
-            List<Vector3> waypoints)
+        if (noDups.Count < 3)
         {
-            // Check dominant exit axis
-            bool exitIsVertical = Mathf.Abs(exitA.y) > Mathf.Abs(exitA.x);
-            Vector3 mid = (a + b) * 0.5f;
-
-            if (exitIsVertical)
-            {
-                // Route: Vertical Stub -> Step out in Z/X with laneOffset -> Turn across -> Step back into End Stub
-                // Candidate 1: Midpoint Y bridge
-                float bridgeY = mid.y;
-                float bridgeZ = Mathf.Max(a.z, b.z) + Mathf.Abs(laneOffset);
-
-                Vector3 c1 = new Vector3(a.x, a.y, bridgeZ);
-                Vector3 c2 = new Vector3(a.x, bridgeY, bridgeZ);
-                Vector3 c3 = new Vector3(b.x, bridgeY, bridgeZ);
-                Vector3 c4 = new Vector3(b.x, b.y, bridgeZ);
-
-                waypoints.Add(c1);
-                waypoints.Add(c2);
-                waypoints.Add(c3);
-                waypoints.Add(c4);
-            }
-            else
-            {
-                // Candidate 2: Midpoint X bridge
-                float bridgeX = mid.x;
-                float bridgeZ = Mathf.Max(a.z, b.z) + Mathf.Abs(laneOffset);
-
-                Vector3 c1 = new Vector3(a.x, a.y, bridgeZ);
-                Vector3 c2 = new Vector3(bridgeX, a.y, bridgeZ);
-                Vector3 c3 = new Vector3(bridgeX, b.y, bridgeZ);
-                Vector3 c4 = new Vector3(b.x, b.y, bridgeZ);
-
-                waypoints.Add(c1);
-                waypoints.Add(c2);
-                waypoints.Add(c3);
-                waypoints.Add(c4);
-            }
+            return noDups;
         }
 
-        /// <summary>
-        /// Removes redundant consecutive points that lie on the same straight line segment.
-        /// </summary>
-        private static void FilterCollinearPoints(List<Vector3> input, List<Vector3> output)
+        // 2. Remove collinear intermediate points
+        List<Vector3> result = new List<Vector3>(noDups.Count);
+        result.Add(noDups[0]);
+
+        for (int i = 1; i < noDups.Count - 1; i++)
         {
-            if (input.Count == 0) return;
-            output.Add(input[0]);
+            Vector3 prev = result[result.Count - 1];
+            Vector3 curr = noDups[i];
+            Vector3 next = noDups[i + 1];
 
-            for (int i = 1; i < input.Count - 1; i++)
+            Vector3 d1 = (curr - prev).normalized;
+            Vector3 d2 = (next - curr).normalized;
+
+            // If d1 and d2 are virtually parallel in the same direction, curr is redundant
+            if (Vector3.Dot(d1, d2) > 0.999f)
             {
-                Vector3 prev = output[output.Count - 1];
-                Vector3 curr = input[i];
-                Vector3 next = input[i + 1];
-
-                // If identical point, skip
-                if ((curr - prev).sqrMagnitude < 1e-7f) continue;
-
-                Vector3 d1 = (curr - prev).normalized;
-                Vector3 d2 = (next - curr).normalized;
-
-                // If directions are parallel (dot close to 1), curr is redundant
-                if (Vector3.Dot(d1, d2) > 0.999f)
-                {
-                    continue;
-                }
-
-                output.Add(curr);
+                continue;
             }
 
-            if (input.Count > 1)
-            {
-                output.Add(input[input.Count - 1]);
-            }
+            result.Add(curr);
         }
 
-        /// <summary>
-        /// Rounds sharp 90-degree corners with smooth small fillets.
-        /// </summary>
-        private static void ApplyCornerFillets(List<Vector3> points, float radius, List<Vector3> output)
-        {
-            if (points.Count < 3)
-            {
-                output.AddRange(points);
-                return;
-            }
-
-            output.Add(points[0]);
-
-            for (int i = 1; i < points.Count - 1; i++)
-            {
-                Vector3 prev = points[i - 1];
-                Vector3 curr = points[i];
-                Vector3 next = points[i + 1];
-
-                Vector3 d1 = (prev - curr).normalized;
-                Vector3 d2 = (next - curr).normalized;
-
-                float maxR = Mathf.Min(Vector3.Distance(prev, curr), Vector3.Distance(next, curr)) * 0.45f;
-                float r = Mathf.Min(radius, maxR);
-
-                Vector3 pA = curr + d1 * r;
-                Vector3 pB = curr + d2 * r;
-
-                output.Add(pA);
-
-                // Small quadratic corner blend
-                for (int s = 1; s <= 3; s++)
-                {
-                    float t = s / 4.0f;
-                    Vector3 filletPt = (1 - t) * (1 - t) * pA + 2 * (1 - t) * t * curr + t * t * pB;
-                    output.Add(filletPt);
-                }
-
-                output.Add(pB);
-            }
-
-            output.Add(points[points.Count - 1]);
-        }
+        result.Add(noDups[noDups.Count - 1]);
+        return result;
     }
 }
