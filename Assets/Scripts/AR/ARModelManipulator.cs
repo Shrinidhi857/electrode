@@ -14,13 +14,13 @@ namespace ContactorAR.AR
     }
 
     /// <summary>
-    /// Handles AR touch gestures for contactor / breaker models:
-    /// - Centralized selection: only the tapped/selected model responds to scale, rotate, and move gestures.
-    /// - 1-Finger Drag to move across the view plane with zero jump (using hit point offset).
-    /// - 2-Finger Pinch to scale ONLY the selected model.
-    /// - 2-Finger Twist to rotate ONLY the selected model around Y axis.
-    /// - 2-Finger Parallel Drag (or Mouse Scroll) to move closer / further in Z (depth in 3D).
-    /// - Coordinate pinning / locking with ARAnchor when locked.
+    /// Handles AR touch gestures and 3D positioning for contactor / breaker models:
+    /// - Centralized Selection: only the active selected model responds to gestures (no cross-model interference).
+    /// - 1-Finger Drag: moves the model horizontally (left/right) and vertically (up/down) in the camera's view plane.
+    /// - 2-Finger Rotate: rotates around the Y axis via twist angle OR horizontal two-finger swipe.
+    /// - 2-Finger Pinch: scales only the selected model.
+    /// - 2-Finger Vertical Drag: pushes/pulls the model in 3D depth (Z axis).
+    /// - Programmatic Rotate: RotateY(degrees) for quick 90° button rotations.
     /// </summary>
     [SelectionBase]
     public class ARModelManipulator : MonoBehaviour
@@ -43,7 +43,7 @@ namespace ContactorAR.AR
         [SerializeField] private float pinchSensitivity = 0.005f;
 
         [Header("Rotation Settings")]
-        [SerializeField] private float rotationSensitivity = 0.4f;
+        [SerializeField] private float rotationSensitivity = 0.6f;
 
         [Header("Layer / Raycast Mask")]
         [SerializeField] private LayerMask interactableMask = ~0;
@@ -56,9 +56,7 @@ namespace ContactorAR.AR
         private Camera mainCamera;
         private Vector3 initialScale;
         private bool isInteractingWithModel = false;
-        private Plane dragPlane;
-        private Vector3 dragOffset;
-        private float dragDistance;
+        private Vector2 lastScreenPos;
 
         // Sub-elements being interacted with
         private MCBPivotLever activeLever;
@@ -79,6 +77,7 @@ namespace ContactorAR.AR
         {
             mainCamera = Camera.main;
             initialScale = transform.localScale;
+            EnsureCollider();
         }
 
         private void OnEnable()
@@ -112,27 +111,61 @@ namespace ContactorAR.AR
             Debug.Log($"[ARModelManipulator] Active selected model: {(Selected != null ? Selected.gameObject.name : "None")}");
         }
 
+        /// <summary>
+        /// Ensures the model and its children have valid, strictly positive colliders for raycasting.
+        /// </summary>
         private void EnsureCollider()
         {
-            Collider col = GetComponent<Collider>();
-            if (col == null)
+            BoxCollider bc = GetComponent<BoxCollider>();
+            Renderer[] rends = GetComponentsInChildren<Renderer>();
+
+            if (bc == null)
             {
-                BoxCollider bc = gameObject.AddComponent<BoxCollider>();
-                Bounds bounds = new Bounds(transform.position, Vector3.zero);
-                Renderer[] rends = GetComponentsInChildren<Renderer>();
+                bc = gameObject.AddComponent<BoxCollider>();
                 if (rends.Length > 0)
                 {
-                    bounds = rends[0].bounds;
+                    Bounds bounds = rends[0].bounds;
                     for (int i = 1; i < rends.Length; i++)
                     {
+                        if (rends[i].GetComponentInParent<Canvas>() != null) continue;
                         bounds.Encapsulate(rends[i].bounds);
                     }
                     bc.center = transform.InverseTransformPoint(bounds.center);
-                    bc.size = transform.InverseTransformVector(bounds.size);
+                    Vector3 lossy = transform.lossyScale;
+                    bc.size = new Vector3(
+                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.x / Mathf.Max(0.001f, Mathf.Abs(lossy.x)))),
+                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.y / Mathf.Max(0.001f, Mathf.Abs(lossy.y)))),
+                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.z / Mathf.Max(0.001f, Mathf.Abs(lossy.z))))
+                    );
                 }
                 else
                 {
-                    bc.size = new Vector3(0.3f, 0.3f, 0.3f);
+                    bc.center = Vector3.zero;
+                    bc.size = new Vector3(0.35f, 0.45f, 0.48f);
+                }
+            }
+            else
+            {
+                // Ensure existing collider dimensions are strictly positive
+                bc.size = new Vector3(
+                    Mathf.Max(0.2f, Mathf.Abs(bc.size.x)),
+                    Mathf.Max(0.2f, Mathf.Abs(bc.size.y)),
+                    Mathf.Max(0.2f, Mathf.Abs(bc.size.z))
+                );
+            }
+
+            // Also ensure mesh colliders on child renderers (excluding UI/wires) for precise touch targeting
+            foreach (Renderer r in rends)
+            {
+                if (r.GetComponentInParent<Canvas>() != null) continue;
+                if (r.GetComponent<Collider>() == null && r is MeshRenderer mr)
+                {
+                    MeshFilter mf = mr.GetComponent<MeshFilter>();
+                    if (mf != null && mf.sharedMesh != null && mf.sharedMesh.isReadable)
+                    {
+                        MeshCollider mc = mr.gameObject.AddComponent<MeshCollider>();
+                        mc.convex = true;
+                    }
                 }
             }
         }
@@ -148,7 +181,6 @@ namespace ContactorAR.AR
             CheckTapSelection();
 
             // CRITICAL: Only the currently SELECTED model executes gestures!
-            // This prevents pinching or moving one model from affecting any other model in the scene.
             if (Selected != this)
             {
                 return;
@@ -207,13 +239,26 @@ namespace ContactorAR.AR
 
             if (tapBegan && mainCamera != null)
             {
+                // Do not switch selection if tapped on UI
+                if (UnityEngine.EventSystems.EventSystem.current != null)
+                {
+                    if (Input.touchCount > 0 && UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject(Input.GetTouch(0).fingerId))
+                        return;
+#if UNITY_EDITOR || UNITY_STANDALONE
+                    if (UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject())
+                        return;
+#endif
+                }
+
                 Ray ray = mainCamera.ScreenPointToRay(tapPos);
-                if (Physics.Raycast(ray, out RaycastHit hit, 50f, interactableMask))
+                RaycastHit[] hits = Physics.RaycastAll(ray, 50f, interactableMask);
+                foreach (var hit in hits)
                 {
                     ARModelManipulator hitManip = hit.collider.GetComponentInParent<ARModelManipulator>();
                     if (hitManip != null && hitManip != Selected)
                     {
                         Select(hitManip);
+                        break;
                     }
                 }
             }
@@ -291,6 +336,15 @@ namespace ContactorAR.AR
                 LockCurrentPosition();
             }
         }
+
+        /// <summary>
+        /// Rotates the model around the world Y axis by the given degrees.
+        /// </summary>
+        public void RotateY(float degrees)
+        {
+            transform.Rotate(Vector3.up, degrees, Space.World);
+            Debug.Log($"[ARModelManipulator] Rotated {gameObject.name} by {degrees:F1}°");
+        }
         #endregion
 
         #region Touch Gestures (Mobile AR)
@@ -304,7 +358,7 @@ namespace ContactorAR.AR
                 return;
             }
 
-            // 1-Finger Touch Interaction (Drag Model in view plane, Drag Lever, or Drag Wire)
+            // 1-Finger Touch: Drag model horizontally (left/right) & vertically (up/down) in 3D camera view plane
             if (touchCount == 1)
             {
                 Touch touch = Input.GetTouch(0);
@@ -315,16 +369,28 @@ namespace ContactorAR.AR
                 }
                 else if (touch.phase == TouchPhase.Moved || touch.phase == TouchPhase.Stationary)
                 {
-                    UpdateTouchInteraction(touch.position);
+                    if (isInteractingWithModel || activeWireEnd != null || activeLever != null)
+                    {
+                        UpdateTouchInteraction(touch.position);
+                    }
+                    else
+                    {
+                        StartTouchInteraction(touch.position);
+                    }
                 }
                 else if (touch.phase == TouchPhase.Ended || touch.phase == TouchPhase.Canceled)
                 {
                     EndAnyDrag();
                 }
             }
-            // 2-Finger Touch Interaction (Pinch to Scale, Twist to Rotate, Parallel Drag for Z Depth)
+            // 2-Finger Touch: Rotate, Pinch Scale, or Depth Move
             else if (touchCount == 2)
             {
+                if (isInteractingWithModel)
+                {
+                    EndAnyDrag();
+                }
+
                 Touch t0 = Input.GetTouch(0);
                 Touch t1 = Input.GetTouch(1);
 
@@ -337,36 +403,33 @@ namespace ContactorAR.AR
                 {
                     float deltaPinch = currentPinchDist - previousPinchDistance;
 
-                    // Twist rotation angle
+                    // 1. Twist angle (angular rotation)
                     Vector2 prevDir = (t0.position - t0.deltaPosition) - (t1.position - t1.deltaPosition);
                     Vector2 currentDir = t0.position - t1.position;
-                    float angle = Vector2.SignedAngle(prevDir, currentDir);
+                    float twistAngle = Vector2.SignedAngle(prevDir, currentDir);
 
-                    // Check if both fingers move in parallel vertically -> adjust Z depth (closer/further)
+                    // 2. Average delta horizontal & vertical across both fingers
+                    float avgDeltaX = (t0.deltaPosition.x + t1.deltaPosition.x) * 0.5f;
                     float avgDeltaY = (t0.deltaPosition.y + t1.deltaPosition.y) * 0.5f;
-                    bool isParallelZDrag = Mathf.Abs(deltaPinch) < 14f && Mathf.Abs(angle) < 8f && Mathf.Abs(avgDeltaY) > 2.5f;
 
-                    if (isParallelZDrag && placementMode == PlacementMode.FreeMovable)
+                    // Rotation: trigger if fingers twist OR if both fingers swipe horizontally together
+                    if (Mathf.Abs(twistAngle) > 0.35f)
                     {
-                        // Parallel 2-finger drag pushes model along camera Z (depth in 3D)
-                        float zStep = avgDeltaY * 0.004f;
-                        transform.position += mainCamera.transform.forward * zStep;
-                        dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
-                        dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
+                        RotateY(-twistAngle * rotationSensitivity * 2.5f);
                     }
-                    else
+                    else if (Mathf.Abs(avgDeltaX) > 1.8f && Mathf.Abs(avgDeltaX) > Mathf.Abs(avgDeltaY) * 1.4f)
                     {
-                        // Pinch to scale
-                        if (Mathf.Abs(deltaPinch) > 1.5f)
-                        {
-                            ApplyPinchScale(deltaPinch * pinchSensitivity);
-                        }
-
-                        // Twist rotation around Y axis
-                        if (Mathf.Abs(angle) > 0.5f)
-                        {
-                            transform.Rotate(Vector3.up, -angle * rotationSensitivity, Space.World);
-                        }
+                        RotateY(-avgDeltaX * rotationSensitivity * 0.5f);
+                    }
+                    // Pinch-to-scale
+                    else if (Mathf.Abs(deltaPinch) > 2.5f)
+                    {
+                        ApplyPinchScale(deltaPinch * pinchSensitivity);
+                    }
+                    // Depth (Z axis) movement: two fingers dragging vertically in parallel
+                    else if (Mathf.Abs(avgDeltaY) > 2.5f && placementMode == PlacementMode.FreeMovable)
+                    {
+                        transform.position += mainCamera.transform.forward * (avgDeltaY * 0.003f);
                     }
 
                     previousPinchDistance = currentPinchDist;
@@ -390,11 +453,7 @@ namespace ContactorAR.AR
                 }
                 else if (placementMode == PlacementMode.FreeMovable)
                 {
-                    // Scroll wheel moves in depth (Z plane)
-                    float zStep = scroll * 1.5f;
-                    transform.position += mainCamera.transform.forward * zStep;
-                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 8.0f);
-                    dragPlane = new Plane(-mainCamera.transform.forward, transform.position);
+                    transform.position += mainCamera.transform.forward * (scroll * 1.5f);
                 }
             }
 
@@ -402,7 +461,7 @@ namespace ContactorAR.AR
             if (Input.GetMouseButton(1))
             {
                 float rotX = Input.GetAxis("Mouse X") * 4.0f;
-                transform.Rotate(Vector3.up, -rotX, Space.World);
+                RotateY(-rotX);
             }
 
             // Left click interactions
@@ -424,10 +483,26 @@ namespace ContactorAR.AR
         #region Interaction Resolution
         private void StartTouchInteraction(Vector3 screenPos)
         {
-            Ray ray = mainCamera.ScreenPointToRay(screenPos);
-            if (Physics.Raycast(ray, out RaycastHit hit, 50f, interactableMask))
+            lastScreenPos = screenPos;
+
+            // 1. Ignore interaction if touching over UI element
+            if (UnityEngine.EventSystems.EventSystem.current != null)
             {
-                // Priority 1: Wire connector end
+                if (Input.touchCount > 0 && UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject(Input.GetTouch(0).fingerId))
+                    return;
+#if UNITY_EDITOR || UNITY_STANDALONE
+                if (UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject())
+                    return;
+#endif
+            }
+
+            // 2. Perform raycast into scene for wire ends, levers, or other models
+            Ray ray = mainCamera.ScreenPointToRay(screenPos);
+            RaycastHit[] hits = Physics.RaycastAll(ray, 50f, interactableMask);
+
+            // Priority 1: Wire connector end
+            foreach (var hit in hits)
+            {
                 WireConnectorEnd wireEnd = hit.collider.GetComponent<WireConnectorEnd>();
                 if (wireEnd != null)
                 {
@@ -435,8 +510,11 @@ namespace ContactorAR.AR
                     activeWireEnd.StartDragging(screenPos);
                     return;
                 }
+            }
 
-                // Priority 2: MCB pivot lever
+            // Priority 2: MCB pivot lever
+            foreach (var hit in hits)
+            {
                 MCBPivotLever lever = hit.collider.GetComponentInParent<MCBPivotLever>();
                 if (lever != null)
                 {
@@ -444,21 +522,24 @@ namespace ContactorAR.AR
                     activeLever.StartDragging(hit.point);
                     return;
                 }
+            }
 
-                // Priority 3: Breaker model body clicked
-                if (hit.transform == transform || hit.transform.IsChildOf(transform))
+            // Priority 3: Check if another model was tapped to switch selection
+            foreach (var hit in hits)
+            {
+                ARModelManipulator otherManip = hit.collider.GetComponentInParent<ARModelManipulator>();
+                if (otherManip != null && otherManip != this)
                 {
-                    if (placementMode == PlacementMode.Locked || placementMode == PlacementMode.HangingAtCoordinates)
-                    {
-                        return;
-                    }
-
-                    isInteractingWithModel = true;
-                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
-                    dragPlane = new Plane(-mainCamera.transform.forward, hit.point);
-                    // Store offset between transform.position and hit.point so the model does not jump upon touch
-                    dragOffset = transform.position - hit.point;
+                    Select(otherManip);
+                    return;
                 }
+            }
+
+            // Priority 4: 3D Movement of THIS selected model
+            // Touching on the model or anywhere in 3D space freely moves this selected model
+            if (placementMode == PlacementMode.FreeMovable)
+            {
+                isInteractingWithModel = true;
             }
         }
 
@@ -483,15 +564,27 @@ namespace ContactorAR.AR
 
             if (isInteractingWithModel && placementMode == PlacementMode.FreeMovable)
             {
-                Ray ray = mainCamera.ScreenPointToRay(screenPos);
-                if (dragPlane.Raycast(ray, out float enter) && enter > 0.05f)
+                Vector2 deltaScreen = (Vector2)screenPos - lastScreenPos;
+                lastScreenPos = screenPos;
+
+                if (deltaScreen.sqrMagnitude > 0.01f)
                 {
-                    transform.position = ray.GetPoint(enter) + dragOffset;
+                    float distance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
+                    float fovRad = mainCamera.fieldOfView * 0.5f * Mathf.Deg2Rad;
+                    float worldPerPixel = (2.0f * distance * Mathf.Tan(fovRad)) / Mathf.Max(100, Screen.height);
+
+                    // Translate along camera right (horizontal left/right) and camera up (vertical up/down)
+                    Vector3 moveDelta = (mainCamera.transform.right * deltaScreen.x + mainCamera.transform.up * deltaScreen.y) * worldPerPixel;
+                    transform.position += moveDelta;
+
+                    // Immediately keep hangingTargetCoordinate in sync with the new position
+                    hangingTargetCoordinate = transform.position;
+                    hangingTargetEuler = transform.eulerAngles;
                 }
-                else
-                {
-                    transform.position = ray.GetPoint(dragDistance) + dragOffset;
-                }
+            }
+            else
+            {
+                lastScreenPos = screenPos;
             }
         }
 
@@ -509,7 +602,14 @@ namespace ContactorAR.AR
                 activeLever = null;
             }
 
-            isInteractingWithModel = false;
+            if (isInteractingWithModel)
+            {
+                isInteractingWithModel = false;
+                // Firmly lock the final position coordinates so it stays in place
+                hangingTargetCoordinate = transform.position;
+                hangingTargetEuler = transform.eulerAngles;
+                Debug.Log($"[ARModelManipulator] {gameObject.name} moved and locked at: {transform.position}");
+            }
         }
 
         private void ApplyPinchScale(float scaleDelta)

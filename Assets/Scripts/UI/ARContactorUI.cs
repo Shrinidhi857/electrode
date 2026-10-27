@@ -41,6 +41,7 @@ namespace ContactorAR.UI
         [SerializeField] private Button buttonSpawnWire;
         [SerializeField] private Button buttonClearWires;
         [SerializeField] private Button buttonToggleLabels;
+        [SerializeField] private Button buttonRotateModel;
 
         [Header("Button Text Displays")]
         [SerializeField] private TextMeshProUGUI powerButtonLabel;
@@ -102,6 +103,7 @@ namespace ContactorAR.UI
             SafeBind(buttonSpawnWire,       OnSpawnWireClicked);
             SafeBind(buttonClearWires,      OnClearWiresClicked);
             SafeBind(buttonToggleLabels,    OnToggleLabelsClicked);
+            SafeBind(buttonRotateModel,     OnRotateClicked);
         }
 
         private static void SafeBind(Button btn, UnityEngine.Events.UnityAction action)
@@ -166,6 +168,15 @@ namespace ContactorAR.UI
                 FindObjectsInactive.Include, FindObjectsSortMode.None);
             for (int i = 0; i < labels.Length; i++)
                 labels[i].SetVisible(areLabelsVisible);
+        }
+
+        public void OnRotateClicked()
+        {
+            ARModelManipulator target = ARModelManipulator.Selected ?? manipulator;
+            if (target != null)
+            {
+                target.RotateY(90f);
+            }
         }
 
         private void OnSidebarComponentClicked(int index, string componentName)
@@ -334,13 +345,16 @@ namespace ContactorAR.UI
             float sH = SmallButtonSize.y;
 
             buttonSpawnWire = CreateButton("BtnSpawnWire", bottomPanel.transform, "+ SPAWN WIRE",
-                new Color(0.18f, 0.52f, 0.62f), new Vector2(-360f, row2Y), new Vector2(sW, sH), 22f);
+                new Color(0.18f, 0.52f, 0.62f), new Vector2(-450f, row2Y), new Vector2(sW, sH), 22f);
 
             buttonClearWires = CreateButton("BtnClearWires", bottomPanel.transform, "CLEAR WIRES",
-                new Color(0.35f, 0.35f, 0.42f), new Vector2(-60f, row2Y), new Vector2(sW, sH), 22f);
+                new Color(0.35f, 0.35f, 0.42f), new Vector2(-150f, row2Y), new Vector2(sW, sH), 22f);
 
             buttonToggleLabels = CreateButton("BtnLabels", bottomPanel.transform, "TOGGLE LABELS",
-                new Color(0.28f, 0.32f, 0.48f), new Vector2(240f, row2Y), new Vector2(sW, sH), 22f);
+                new Color(0.28f, 0.32f, 0.48f), new Vector2(150f, row2Y), new Vector2(sW, sH), 22f);
+
+            buttonRotateModel = CreateButton("BtnRotate", bottomPanel.transform, "ROTATE 90°",
+                new Color(0.38f, 0.28f, 0.58f), new Vector2(450f, row2Y), new Vector2(sW, sH), 22f);
         }
 
         // ── Left-side scrollable component browser sidebar ────────────
