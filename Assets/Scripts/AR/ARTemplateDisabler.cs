@@ -89,10 +89,49 @@ namespace ContactorAR.AR
             }
         }
 
+        private UnityEngine.XR.ARFoundation.ARPlaneManager cachedPlaneManager;
+        private float nextScanTime = 0f;
+
+        private void OnEnable()
+        {
+            cachedPlaneManager = Object.FindFirstObjectByType<UnityEngine.XR.ARFoundation.ARPlaneManager>(FindObjectsInactive.Include);
+            if (cachedPlaneManager != null)
+            {
+                if (cachedPlaneManager.planePrefab != null) cachedPlaneManager.planePrefab = null;
+                cachedPlaneManager.planesChanged += OnPlanesChanged;
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (cachedPlaneManager != null)
+            {
+                cachedPlaneManager.planesChanged -= OnPlanesChanged;
+            }
+        }
+
+        private void OnPlanesChanged(UnityEngine.XR.ARFoundation.ARPlanesChangedEventArgs args)
+        {
+            foreach (var plane in args.added)
+            {
+                DisableRenderersOnHierarchy(plane.gameObject);
+                if (plane.gameObject.activeSelf) plane.gameObject.SetActive(false);
+            }
+            foreach (var plane in args.updated)
+            {
+                DisableRenderersOnHierarchy(plane.gameObject);
+            }
+        }
+
         private void Update()
         {
-            // Continuously suppress any plane visualizations that AR Foundation spawns dynamically
-            DisableARPlaneVisualizations();
+            // Lightweight event-driven suppression: periodic check throttled to once every 2 seconds
+            // instead of running 6 full-scene GameObject scans every frame.
+            if (Time.time >= nextScanTime)
+            {
+                nextScanTime = Time.time + 2.0f;
+                DisableARPlaneVisualizations();
+            }
         }
 
         /// <summary>
@@ -113,16 +152,20 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Also catch any GameObjects whose name suggests they are plane visualizations
+            // Single unified pass to catch any standalone plane visualization GameObjects
             string[] planeNames = { "ARPlane", "AR Feathered Plane", "PlaneVisualization", "PlaneDebugVisualizer", "DebugPlane", "DetectedPlane" };
-            foreach (string pName in planeNames)
+            GameObject[] allObjects = Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (int i = 0; i < allObjects.Length; i++)
             {
-                foreach (GameObject go in Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                GameObject go = allObjects[i];
+                if (go == null) continue;
+                for (int p = 0; p < planeNames.Length; p++)
                 {
-                    if (go != null && go.name.Contains(pName))
+                    if (go.name.Contains(planeNames[p]))
                     {
                         DisableRenderersOnHierarchy(go);
                         if (go.activeSelf) go.SetActive(false);
+                        break;
                     }
                 }
             }

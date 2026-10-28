@@ -56,12 +56,9 @@ namespace ContactorAR.Wiring
             GameObject wireObj = new GameObject(wireName);
             wireObj.transform.position = spawnOrigin;
 
-            // Anchor wire object into contactor hierarchy to share coordinate stability
-            ContactorAR.Breaker.ContactorController contactor = FindFirstObjectByType<ContactorAR.Breaker.ContactorController>();
-            if (contactor != null)
-            {
-                wireObj.transform.SetParent(contactor.transform, true);
-            }
+            // Keep wire under this WireSpawner/CircuitSimulator root object at scale (1,1,1)
+            // NEVER parent to the contactor directly to avoid inheriting 0.008x model scale
+            wireObj.transform.SetParent(transform, true);
 
             CylindricalWire wire = wireObj.AddComponent<CylindricalWire>();
             wire.EnsureConnectorEnds();

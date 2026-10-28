@@ -148,8 +148,7 @@ namespace ContactorAR.AR
             int cloneNumber = liveModels.Count + 1;
             GameObject newInstance = Instantiate(sourceGO, spawnPos, spawnRot);
             newInstance.name = $"{displayName ?? "Component"}_{cloneNumber}";
-            newInstance.transform.position = spawnPos;
-            newInstance.transform.rotation = spawnRot;
+            // Position/rotation already set by Instantiate above — do not re-assign to avoid double-offset.
 
             // Configure MCB instance if loaded from raw asset
             if (displayName != null && (displayName.Contains("MCB") || displayName.Contains("Breaker") || newInstance.name.ToLowerInvariant().Contains("mcb")))
@@ -166,6 +165,7 @@ namespace ContactorAR.AR
             ARModelManipulator manip = newInstance.GetComponent<ARModelManipulator>();
             if (manip == null) manip = newInstance.AddComponent<ARModelManipulator>();
             manip.ReleaseToFreeMovable();
+            manip.RefreshScaleBounds(); // Recalibrate pinch-to-scale after scale was set by Configure*()
 
             // Reset wire connections and generate unique IDs for all terminals on the new instance
             TerminalPort[] ports = newInstance.GetComponentsInChildren<TerminalPort>(true);

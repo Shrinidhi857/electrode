@@ -177,12 +177,13 @@ namespace ContactorAR.Breaker
         /// - ElectricalEffectsManager
         /// - BoxCollider on root & pivot
         /// </summary>
-        public static void ConfigureMCBInstance(GameObject instance)
+        public static void ConfigureMCBInstance(GameObject instance, bool applyDefaultScale = true)
         {
             if (instance == null) return;
 
-            // 0. Set compact AR scale
-            instance.transform.localScale = Vector3.one * MCB_DEFAULT_SCALE;
+            // 0. Set compact AR scale (only when explicitly requested, e.g. on first instantiation)
+            if (applyDefaultScale)
+                instance.transform.localScale = Vector3.one * MCB_DEFAULT_SCALE;
 
             // 1. ContactorController
             ContactorController contactor = instance.GetComponent<ContactorController>();
@@ -216,7 +217,12 @@ namespace ContactorAR.Breaker
                     Bounds bounds = rends[0].bounds;
                     for (int i = 1; i < rends.Length; i++) bounds.Encapsulate(rends[i].bounds);
                     rootCol.center = instance.transform.InverseTransformPoint(bounds.center);
-                    rootCol.size = instance.transform.InverseTransformVector(bounds.size);
+                    Vector3 lossy = instance.transform.lossyScale;
+                    rootCol.size = new Vector3(
+                        Mathf.Abs(bounds.size.x / Mathf.Max(0.0001f, Mathf.Abs(lossy.x))),
+                        Mathf.Abs(bounds.size.y / Mathf.Max(0.0001f, Mathf.Abs(lossy.y))),
+                        Mathf.Abs(bounds.size.z / Mathf.Max(0.0001f, Mathf.Abs(lossy.z)))
+                    );
                 }
             }
 
@@ -305,12 +311,13 @@ namespace ContactorAR.Breaker
         /// - All 12 terminals wired up with TerminalPoint, TerminalPort, SphereCollider, TerminalWorldLabel
         /// - ARModelManipulator, ElectricalEffectsManager, BoxCollider on root
         /// </summary>
-        public static void ConfigureContactorInstance(GameObject instance)
+        public static void ConfigureContactorInstance(GameObject instance, bool applyDefaultScale = true)
         {
             if (instance == null) return;
 
-            // 0. Set compact AR scale
-            instance.transform.localScale = Vector3.one * CONTACTOR_DEFAULT_SCALE;
+            // 0. Set compact AR scale (only when explicitly requested)
+            if (applyDefaultScale)
+                instance.transform.localScale = Vector3.one * CONTACTOR_DEFAULT_SCALE;
 
             // 1. ContactorController (circuit sim backbone)
             ContactorController contactor = instance.GetComponent<ContactorController>();
@@ -336,7 +343,12 @@ namespace ContactorAR.Breaker
                     Bounds b = rends[0].bounds;
                     for (int i = 1; i < rends.Length; i++) b.Encapsulate(rends[i].bounds);
                     rootCol.center = instance.transform.InverseTransformPoint(b.center);
-                    rootCol.size   = instance.transform.InverseTransformVector(b.size);
+                    Vector3 lossy = instance.transform.lossyScale;
+                    rootCol.size = new Vector3(
+                        Mathf.Abs(b.size.x / Mathf.Max(0.0001f, Mathf.Abs(lossy.x))),
+                        Mathf.Abs(b.size.y / Mathf.Max(0.0001f, Mathf.Abs(lossy.y))),
+                        Mathf.Abs(b.size.z / Mathf.Max(0.0001f, Mathf.Abs(lossy.z)))
+                    );
                 }
             }
 

@@ -96,12 +96,12 @@ namespace ContactorAR.Breaker
             bool isContactor = breakerObj.name.ToLower().Contains("contactor") || breakerObj.GetComponent<ContactorArmatureController>() != null;
             if (isContactor)
             {
-                ModelAssetLoader.ConfigureContactorInstance(breakerObj);
+                ModelAssetLoader.ConfigureContactorInstance(breakerObj, applyDefaultScale: false); // scale applied in step 8
                 log.AppendLine($"[OK] Configured as Contactor: 12 terminals, CJX2S-090018 armature plunger (ON=0.0126, OFF=0.0069).");
             }
             else
             {
-                ModelAssetLoader.ConfigureMCBInstance(breakerObj);
+                ModelAssetLoader.ConfigureMCBInstance(breakerObj, applyDefaultScale: false);        // scale applied in step 8
                 contactor.AutoDiscoverTerminalsIfEmpty();
                 log.AppendLine($"[OK] Configured as MCB Breaker: 8 terminals (term_in_1..4, term_out_1..4), mcb_pivot.");
             }
@@ -137,17 +137,25 @@ namespace ContactorAR.Breaker
             }
             else log.AppendLine("[OK] PowerCircuitSimulator found.");
 
-            // 7. Validate distance from camera (keep model 1-2 feet / ~0.50m directly in front)
+            // 7. Validate distance from camera (keep model 1-2 feet / ~0.50m directly in front).
+            //    Only reposition if the model is clearly out-of-range (> 3m) — avoids fighting with
+            //    ARModelManipulator when the user has manually placed the model within a reasonable range.
             Camera cam = Camera.main;
             if (cam != null && breakerObj != null)
             {
                 float dist = Vector3.Distance(breakerObj.transform.position, cam.transform.position);
-                if (dist > 1.2f || breakerObj.transform.position.z > 1.2f)
+                bool tooFar   = dist > 3.0f;                              // clearly not in AR view
+                bool atOrigin = breakerObj.transform.position == Vector3.zero; // never been positioned
+                if (tooFar || atOrigin)
                 {
                     Vector3 calibratedPos = cam.transform.position + cam.transform.forward * ModelAssetLoader.SPAWN_DISTANCE;
                     breakerObj.transform.position = calibratedPos;
                     breakerObj.transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
-                    log.AppendLine($"[CALIBRATED] Model positioned 1-2 feet ({ModelAssetLoader.SPAWN_DISTANCE:F2}m) directly in front of camera.");
+                    log.AppendLine($"[CALIBRATED] Model repositioned to {ModelAssetLoader.SPAWN_DISTANCE:F2}m in front of camera (was {dist:F2}m away).");
+                }
+                else
+                {
+                    log.AppendLine($"[OK] Model already in valid range ({dist:F2}m from camera) — position preserved.");
                 }
             }
 
@@ -157,13 +165,18 @@ namespace ContactorAR.Breaker
                 float targetScale = isContactor ? ModelAssetLoader.CONTACTOR_DEFAULT_SCALE : ModelAssetLoader.MCB_DEFAULT_SCALE;
                 breakerObj.transform.localScale = Vector3.one * targetScale;
                 log.AppendLine($"[OK] Scale calibrated: {breakerObj.transform.localScale}");
+
+                // Notify ARModelManipulator of the final scale so pinch-to-scale bounds are correct
+                AR.ARModelManipulator manip2 = breakerObj.GetComponent<AR.ARModelManipulator>();
+                if (manip2 != null) manip2.RefreshScaleBounds();
             }
 
-            // 9. Lock model in place to prevent drift
+            // 9. Start in FreeMovable mode so the user can drag the model into place.
+            //    The LOCK button in the UI will lock it once positioned.
             if (arManip != null)
             {
-                arManip.LockCurrentPosition();
-                log.AppendLine("[OK] Breaker anchored and locked to prevent camera drift.");
+                arManip.ReleaseToFreeMovable();
+                log.AppendLine("[OK] Breaker started in FreeMovable mode — drag to position, then tap LOCK.");
             }
 
             log.AppendLine("=== Bootstrap Complete ===");

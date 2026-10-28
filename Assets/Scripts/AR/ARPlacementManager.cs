@@ -223,10 +223,18 @@ namespace ContactorAR.AR
             modelPlaced = true;
             HideReticle();
 
+            // Refresh pinch-to-scale bounds to match the configure-applied scale
+            spawnedManipulator.RefreshScaleBounds();
+
             // Optional: Auto-hang immediately
             if (autoHangOnPlacement && spawnedManipulator != null)
             {
                 spawnedManipulator.HangAtCoordinate(worldPosition, worldRotation);
+            }
+            else
+            {
+                // Leave in FreeMovable so user can drag into exact position
+                spawnedManipulator.ReleaseToFreeMovable();
             }
 
             OnModelPlaced?.Invoke(worldPosition, worldRotation);

@@ -28,8 +28,8 @@ namespace ContactorAR.AR
         [Header("Placement & Hanging")]
         [SerializeField] private PlacementMode placementMode = PlacementMode.FreeMovable;
 
-        [Tooltip("Specific world coordinate where the contactor is hung / pinned.")]
-        [SerializeField] private Vector3 hangingTargetCoordinate = new Vector3(0f, 0f, 1.2f);
+        [Tooltip("Specific world coordinate where the contactor is hung / pinned. Initialized to Vector3.zero so HangAtCoordinate() must be called explicitly — never drifts to a stale (0,0,1.2) default.")]
+        [SerializeField] private Vector3 hangingTargetCoordinate = Vector3.zero;
 
         [Tooltip("Target rotation when hung.")]
         [SerializeField] private Vector3 hangingTargetEuler = new Vector3(0f, 180f, 0f);
@@ -38,9 +38,11 @@ namespace ContactorAR.AR
         [SerializeField] private float hangingLerpSpeed = 8.0f;
 
         [Header("Pinch-to-Scale Settings")]
-        [SerializeField] private float minScale = 0.5f;
-        [SerializeField] private float maxScale = 30.0f;
-        [SerializeField] private float pinchSensitivity = 0.005f;
+        [Tooltip("Smallest allowed scale as a multiplier of the model's initial spawn scale (e.g. 0.2 = 20% of original size).")]
+        [SerializeField] private float minScaleFactor = 0.2f;
+        [Tooltip("Largest allowed scale as a multiplier of the model's initial spawn scale (e.g. 10 = 10x original size).")]
+        [SerializeField] private float maxScaleFactor = 10.0f;
+        [SerializeField] private float pinchSensitivity = 0.008f;
 
         [Header("Rotation Settings")]
         [SerializeField] private float rotationSensitivity = 0.6f;
@@ -55,6 +57,8 @@ namespace ContactorAR.AR
 
         private Camera mainCamera;
         private Vector3 initialScale;
+        private float minScaleAbs;   // initialScale.magnitude * minScaleFactor
+        private float maxScaleAbs;   // initialScale.magnitude * maxScaleFactor
         private bool isInteractingWithModel = false;
         private Vector2 lastScreenPos;
 
@@ -77,6 +81,13 @@ namespace ContactorAR.AR
         {
             mainCamera = Camera.main;
             initialScale = transform.localScale;
+            // Derive absolute min/max scale bounds from the model's actual spawn scale.
+            // This works correctly whether the model is 0.008 (MCB) or 0.8 (Contactor).
+            float baseSize = Mathf.Max(initialScale.x, 0.0001f);
+            minScaleAbs = baseSize * minScaleFactor;
+            maxScaleAbs = baseSize * maxScaleFactor;
+            hangingTargetCoordinate = transform.position;
+            hangingTargetEuler = transform.eulerAngles;
             EnsureCollider();
         }
 
@@ -98,6 +109,21 @@ namespace ContactorAR.AR
         private void Start()
         {
             EnsureCollider();
+            // Refresh scale bounds in Start() because Bootstrap (DefaultExecutionOrder=-100) may
+            // have changed localScale between Awake and Start. Capture the final intended spawn scale.
+            RefreshScaleBounds();
+        }
+
+        /// <summary>
+        /// Recalculates absolute min/max scale from current localScale and serialized scale factor fields.
+        /// Call any time localScale is externally set (e.g. by Bootstrap or ComponentSpawner).
+        /// </summary>
+        public void RefreshScaleBounds()
+        {
+            initialScale = transform.localScale;
+            float baseSize = Mathf.Max(initialScale.x, 0.0001f);
+            minScaleAbs = baseSize * minScaleFactor;
+            maxScaleAbs = baseSize * maxScaleFactor;
         }
 
         /// <summary>
@@ -112,12 +138,21 @@ namespace ContactorAR.AR
         }
 
         /// <summary>
-        /// Ensures the model and its children have valid, strictly positive colliders for raycasting.
+        /// Ensures the model has a valid BoxCollider in the correct local-space size.
+        /// The MCB model has localScale=0.008 so local collider units are 125x world-space —
+        /// a 1m local cube becomes 0.008m (8mm) world, which is correct for a 5.8cm model.
+        /// Minimum size enforces 0.01m world-space = 1.25 local at scale 0.008.
         /// </summary>
         private void EnsureCollider()
         {
             BoxCollider bc = GetComponent<BoxCollider>();
             Renderer[] rends = GetComponentsInChildren<Renderer>();
+
+            // Compute a safe minimum: 0.01m world minimum in local space
+            Vector3 lossy = transform.lossyScale;
+            float minLocalX = Mathf.Max(0.01f / Mathf.Max(0.0001f, Mathf.Abs(lossy.x)), 0.1f);
+            float minLocalY = Mathf.Max(0.01f / Mathf.Max(0.0001f, Mathf.Abs(lossy.y)), 0.1f);
+            float minLocalZ = Mathf.Max(0.01f / Mathf.Max(0.0001f, Mathf.Abs(lossy.z)), 0.1f);
 
             if (bc == null)
             {
@@ -131,26 +166,25 @@ namespace ContactorAR.AR
                         bounds.Encapsulate(rends[i].bounds);
                     }
                     bc.center = transform.InverseTransformPoint(bounds.center);
-                    Vector3 lossy = transform.lossyScale;
                     bc.size = new Vector3(
-                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.x / Mathf.Max(0.001f, Mathf.Abs(lossy.x)))),
-                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.y / Mathf.Max(0.001f, Mathf.Abs(lossy.y)))),
-                        Mathf.Max(0.25f, Mathf.Abs(bounds.size.z / Mathf.Max(0.001f, Mathf.Abs(lossy.z))))
+                        Mathf.Max(minLocalX, Mathf.Abs(bounds.size.x / Mathf.Max(0.001f, Mathf.Abs(lossy.x)))),
+                        Mathf.Max(minLocalY, Mathf.Abs(bounds.size.y / Mathf.Max(0.001f, Mathf.Abs(lossy.y)))),
+                        Mathf.Max(minLocalZ, Mathf.Abs(bounds.size.z / Mathf.Max(0.001f, Mathf.Abs(lossy.z))))
                     );
                 }
                 else
                 {
                     bc.center = Vector3.zero;
-                    bc.size = new Vector3(0.35f, 0.45f, 0.48f);
+                    bc.size = new Vector3(minLocalX * 10f, minLocalY * 10f, minLocalZ * 10f);
                 }
             }
             else
             {
-                // Ensure existing collider dimensions are strictly positive
+                // Ensure existing collider dimensions are strictly positive in local space
                 bc.size = new Vector3(
-                    Mathf.Max(0.2f, Mathf.Abs(bc.size.x)),
-                    Mathf.Max(0.2f, Mathf.Abs(bc.size.y)),
-                    Mathf.Max(0.2f, Mathf.Abs(bc.size.z))
+                    Mathf.Max(minLocalX, Mathf.Abs(bc.size.x)),
+                    Mathf.Max(minLocalY, Mathf.Abs(bc.size.y)),
+                    Mathf.Max(minLocalZ, Mathf.Abs(bc.size.z))
                 );
             }
 
@@ -293,9 +327,9 @@ namespace ContactorAR.AR
         }
 
         /// <summary>
-        /// Hangs the contactor directly in front of the AR camera at calibrated eye-level.
+        /// Hangs the contactor directly in front of the AR camera at calibrated eye-level (1-2 feet / ~0.50m).
         /// </summary>
-        public void HangAtCameraEyeLevel(float distance = 1.2f, float heightOffset = 0.0f)
+        public void HangAtCameraEyeLevel(float distance = ModelAssetLoader.SPAWN_DISTANCE, float heightOffset = 0.0f)
         {
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
@@ -412,6 +446,8 @@ namespace ContactorAR.AR
                     float avgDeltaX = (t0.deltaPosition.x + t1.deltaPosition.x) * 0.5f;
                     float avgDeltaY = (t0.deltaPosition.y + t1.deltaPosition.y) * 0.5f;
 
+                    bool sameDirectionY = (t0.deltaPosition.y * t1.deltaPosition.y > 0);
+
                     // Rotation: trigger if fingers twist OR if both fingers swipe horizontally together
                     if (Mathf.Abs(twistAngle) > 0.35f)
                     {
@@ -426,8 +462,8 @@ namespace ContactorAR.AR
                     {
                         ApplyPinchScale(deltaPinch * pinchSensitivity);
                     }
-                    // Depth (Z axis) movement: two fingers dragging vertically in parallel
-                    else if (Mathf.Abs(avgDeltaY) > 2.5f && placementMode == PlacementMode.FreeMovable)
+                    // Depth (Z axis) movement: two fingers dragging vertically in parallel in the same direction
+                    else if (sameDirectionY && Mathf.Abs(avgDeltaY) > 4.0f && placementMode == PlacementMode.FreeMovable)
                     {
                         transform.position += mainCamera.transform.forward * (avgDeltaY * 0.003f);
                     }
@@ -560,10 +596,38 @@ namespace ContactorAR.AR
             }
 
             // Priority 5: 3D Movement of THIS selected model
-            // Touching on the model or anywhere in 3D space freely moves this selected model
+            // Start dragging if: (a) the touch actually hit this model's colliders, OR
+            // (b) the model is selected and the touch is close to model centre on-screen
+            // (handles cases where the BoxCollider is undersized after import)
             if (placementMode == PlacementMode.FreeMovable)
             {
-                isInteractingWithModel = true;
+                bool hitThisModel = false;
+                foreach (var hit in hits)
+                {
+                    if (hit.collider.GetComponentInParent<ARModelManipulator>() == this &&
+                        hit.collider.GetComponent<WireConnectorEnd>() == null)
+                    {
+                        hitThisModel = true;
+                        break;
+                    }
+                }
+
+                // Fallback: allow drag when tapping within 180px of the projected model centre
+                if (!hitThisModel && mainCamera != null)
+                {
+                    Vector3 modelScreenPos = mainCamera.WorldToScreenPoint(transform.position);
+                    if (modelScreenPos.z > 0f)
+                    {
+                        float screenDist = Vector2.Distance(new Vector2(screenPos.x, screenPos.y),
+                                                            new Vector2(modelScreenPos.x, modelScreenPos.y));
+                        hitThisModel = screenDist < 180f;
+                    }
+                }
+
+                if (hitThisModel)
+                {
+                    isInteractingWithModel = true;
+                }
             }
         }
 
@@ -640,7 +704,9 @@ namespace ContactorAR.AR
         {
             Vector3 current = transform.localScale;
             float factor = 1.0f + scaleDelta;
-            float newScaleX = Mathf.Clamp(current.x * factor, minScale, maxScale);
+            // Scale by factor but clamp to relative min/max — works for any initial scale (0.008 MCB or 0.8 Contactor)
+            float newScaleX = Mathf.Clamp(current.x * factor, minScaleAbs, maxScaleAbs);
+            if (Mathf.Approximately(current.x, 0f)) return;
             float ratio = newScaleX / current.x;
             transform.localScale = current * ratio;
         }
