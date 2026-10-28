@@ -25,8 +25,8 @@ namespace ContactorAR.Wiring
         [SerializeField] private ContactorController parentContactor;
 
         [Header("Snap Configuration")]
-        [Tooltip("Max distance within which a wire end snaps to this terminal.")]
-        [SerializeField] private float snapRadius = 0.45f;
+        [Tooltip("Max distance within which a wire end snaps to this terminal (tight 2.5cm to prevent cross-pole jumping).")]
+        [SerializeField] private float snapRadius = 0.025f;
 
         [Tooltip("Specific local offset for wire tip attachment if needed.")]
         [SerializeField] private Vector3 snapAnchorOffset = Vector3.zero;
@@ -102,7 +102,7 @@ namespace ContactorAR.Wiring
             if (col == null)
             {
                 SphereCollider sc = gameObject.AddComponent<SphereCollider>();
-                sc.radius = snapRadius * 0.5f;
+                sc.radius = Mathf.Max(snapRadius * 0.8f, 0.02f);
                 sc.isTrigger = true;
             }
         }
@@ -115,7 +115,7 @@ namespace ContactorAR.Wiring
             snapHighlightObject.name = "SnapHighlight";
             snapHighlightObject.transform.SetParent(transform, false);
             snapHighlightObject.transform.localPosition = snapAnchorOffset;
-            snapHighlightObject.transform.localScale = Vector3.one * (snapRadius * 0.8f);
+            snapHighlightObject.transform.localScale = Vector3.one * Mathf.Max(snapRadius * 1.0f, 0.025f);
 
             // Remove collider
             Destroy(snapHighlightObject.GetComponent<Collider>());

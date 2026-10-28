@@ -22,15 +22,15 @@ namespace ContactorAR.Editor
             // 0. Disable default AR Template (UI canvas & Object Spawner) to stop tap interference
             DisableDefaultARTemplateInternal();
 
-            // 1. Locate the Breaker object in the scene
-            GameObject breakerObj = GameObject.Find("Four-Pole-Breaker-final");
+            // 1. Locate or load the MCB Breaker object (3_pole_mcb_final)
+            GameObject breakerObj = GameObject.Find("3_pole_mcb_final");
             if (breakerObj == null)
             {
-                // Try finding any object with 'breaker' or 'mcb' in its name
+                // Try finding any object with 'mcb' or 'breaker' in its name
                 GameObject[] all = Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
                 foreach (GameObject g in all)
                 {
-                    if (g.name.ToLower().Contains("breaker") || g.name.ToLower().Contains("contactor"))
+                    if (g.name.ToLower().Contains("3_pole_mcb") || g.name.ToLower().Contains("mcb") || g.name.ToLower().Contains("breaker"))
                     {
                         breakerObj = g;
                         break;
@@ -38,10 +38,29 @@ namespace ContactorAR.Editor
                 }
             }
 
+            // If not found in the scene, load directly from Assets!
+            if (breakerObj == null)
+            {
+                GameObject assetObj = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/3_pole_mcb_final.fbx");
+                if (assetObj != null)
+                {
+                    Camera cam = Camera.main;
+                    Vector3 spawnPos = cam != null ? cam.transform.position + cam.transform.forward * ModelAssetLoader.SPAWN_DISTANCE : new Vector3(0, 0, ModelAssetLoader.SPAWN_DISTANCE);
+                    Quaternion spawnRot = cam != null ? Quaternion.LookRotation(-cam.transform.forward, Vector3.up) : Quaternion.Euler(0, 180, 0);
+                    breakerObj = (GameObject)PrefabUtility.InstantiatePrefab(assetObj);
+                    breakerObj.transform.position = spawnPos;
+                    breakerObj.transform.rotation = spawnRot;
+                    breakerObj.name = "3_pole_mcb_final";
+                    breakerObj.transform.localScale = Vector3.one * ModelAssetLoader.MCB_DEFAULT_SCALE;
+                    Undo.RegisterCreatedObjectUndo(breakerObj, "Instantiate 3_pole_mcb_final from Assets");
+                    Debug.Log("[ContactorSceneSetupTool] Loaded and instantiated '3_pole_mcb_final' directly from Assets!");
+                }
+            }
+
             if (breakerObj == null)
             {
                 EditorUtility.DisplayDialog("Breaker Not Found", 
-                    "Could not find 'Four-Pole-Breaker-final' in the current scene. Please select it in the Hierarchy and run again.", "OK");
+                    "Could not find '3_pole_mcb_final' in the current scene or Assets. Please ensure Assets/3_pole_mcb_final.fbx exists.", "OK");
                 return;
             }
 
@@ -66,12 +85,13 @@ namespace ContactorAR.Editor
                 MCBPivotLever lever = breakerObj.GetComponent<MCBPivotLever>();
                 if (lever == null) lever = breakerObj.AddComponent<MCBPivotLever>();
 
-                // Configure exact calibrated angles: ON (-14.259°), OFF (70.0°), TRIP (27.87°)
+                // Configure exact calibrated angles for 3_pole_mcb_final:
+                // ON (-160° UP), OFF (-70° DOWN), TRIP (-115° MIDDLE) on X axis
                 SerializedObject so = new SerializedObject(lever);
                 so.FindProperty("pivotTransform").objectReferenceValue = pivotTrans;
-                so.FindProperty("offAngle").floatValue = 70.0f;
-                so.FindProperty("onAngle").floatValue = -14.259f;
-                so.FindProperty("tripAngle").floatValue = 27.87f;
+                so.FindProperty("offAngle").floatValue = -70.0f;
+                so.FindProperty("onAngle").floatValue = -160.0f;
+                so.FindProperty("tripAngle").floatValue = -115.0f;
                 so.FindProperty("rotationAxis").enumValueIndex = 0; // X axis
                 so.ApplyModifiedProperties();
             }
@@ -132,7 +152,18 @@ namespace ContactorAR.Editor
                 ARContactorUI ui = uiObj.AddComponent<ARContactorUI>();
             }
 
-            // 10. Mark scene dirty to save changes
+            // 10. Save configured prefab to Assets/Resources/Models/3_pole_mcb_final.prefab for runtime loading
+            string prefabDir = "Assets/Resources/Models";
+            if (!System.IO.Directory.Exists(prefabDir))
+            {
+                System.IO.Directory.CreateDirectory(prefabDir);
+                AssetDatabase.Refresh();
+            }
+            string prefabPath = $"{prefabDir}/3_pole_mcb_final.prefab";
+            PrefabUtility.SaveAsPrefabAssetAndConnect(breakerObj, prefabPath, InteractionMode.AutomatedAction);
+            Debug.Log($"[ContactorSceneSetupTool] Saved configured prefab to '{prefabPath}' for runtime loading.");
+
+            // 11. Mark scene dirty to save changes
             UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
                 UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene()
             );
@@ -140,15 +171,16 @@ namespace ContactorAR.Editor
             Selection.activeGameObject = breakerObj;
 
             EditorUtility.DisplayDialog("Setup Successful!",
-                "4-Pole Breaker / Contactor AR experience successfully configured!\n\n" +
+                "3-Pole / 4-Pole MCB Breaker (3_pole_mcb_final) successfully configured!\n\n" +
                 "Features Ready:\n" +
-                "• Pivot Lever (-1.4° OFF to 68° ON / TRIP)\n" +
+                "• Pivot Lever (-160° UP/ON, -70° DOWN/OFF, -115° TRIP) on X axis\n" +
                 "• AR Pinch-to-Scale, 1-Finger Drag, 2-Finger Twist\n" +
                 "• Coordinate Hanging / Pinning Mode\n" +
                 "• 8 Snap-Enabled Terminals (term_in_1..4, term_out_1..4)\n" +
                 "• Floating AR World Labels with Live Voltage\n" +
                 "• Cylindrical 3D Wires with Spherical Snap Connectors\n" +
                 "• 4-Pole Circuit Power Simulation & Overload Trip\n" +
+                "• Saved to Assets/Resources/Models/3_pole_mcb_final.prefab for runtime loading\n" +
                 "• Full On-Screen AR HUD Controls", "Awesome!");
         }
 
@@ -169,6 +201,13 @@ namespace ContactorAR.Editor
             if (tp == null) tp = termTrans.gameObject.AddComponent<TerminalPoint>();
             tp.Initialize(contactor, index, type, label);
 
+            // Configure TerminalPort for orthogonal wire system
+            TerminalPort port = termTrans.GetComponent<TerminalPort>();
+            if (port == null) port = termTrans.gameObject.AddComponent<TerminalPort>();
+            port.terminalId = type == TerminalType.Input ? $"IN_{index + 1}" : $"OUT_{index + 1}";
+            port.maxWires = 1;
+            port.LocalExitDirection = type == TerminalType.Input ? ExitDirection.Up : ExitDirection.Down;
+
             // Add AR Floating Label
             Transform labelChild = termTrans.Find("TerminalLabel");
             if (labelChild == null)
@@ -180,7 +219,96 @@ namespace ContactorAR.Editor
             }
         }
 
-        [MenuItem("Tools/Breaker & Contactor AR/Disable Default AR Template (UI & Spawner)", false, 2)]
+        [MenuItem("Tools/Breaker & Contactor AR/Setup Contactor in Scene", false, 2)]
+        public static void SetupContactorInScene()
+        {
+            // 0. Disable default AR Template
+            DisableDefaultARTemplateInternal();
+
+            // 1. Locate or load 3_pole_contactor_final
+            GameObject contactorObj = GameObject.Find("3_pole_contactor_final");
+            if (contactorObj == null)
+            {
+                GameObject[] all = Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
+                foreach (GameObject g in all)
+                {
+                    if (g.name.ToLower().Contains("3_pole_contactor") || 
+                       (g.name.ToLower().Contains("contactor") && !g.name.ToLower().Contains("canvas") && !g.name.ToLower().Contains("ui")))
+                    {
+                        contactorObj = g;
+                        break;
+                    }
+                }
+            }
+
+            if (contactorObj == null)
+            {
+                GameObject assetObj = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/3_pole_contactor_final.fbx");
+                if (assetObj == null)
+                {
+                    assetObj = ModelAssetLoader.LoadContactorModel();
+                }
+
+                if (assetObj != null)
+                {
+                    Camera cam = Camera.main;
+                    Vector3 spawnPos = cam != null ? cam.transform.position + cam.transform.forward * ModelAssetLoader.SPAWN_DISTANCE + cam.transform.right * 0.09f : new Vector3(0.09f, 0, ModelAssetLoader.SPAWN_DISTANCE);
+                    Quaternion spawnRot = cam != null ? Quaternion.LookRotation(-cam.transform.forward, Vector3.up) : Quaternion.Euler(0, 180, 0);
+                    contactorObj = (GameObject)PrefabUtility.InstantiatePrefab(assetObj);
+                    contactorObj.transform.position = spawnPos;
+                    contactorObj.transform.rotation = spawnRot;
+                    contactorObj.name = "3_pole_contactor_final";
+                    contactorObj.transform.localScale = Vector3.one * ModelAssetLoader.CONTACTOR_DEFAULT_SCALE;
+                    Undo.RegisterCreatedObjectUndo(contactorObj, "Instantiate 3_pole_contactor_final from Assets");
+                    Debug.Log("[ContactorSceneSetupTool] Loaded and instantiated '3_pole_contactor_final' directly from Assets!");
+                }
+            }
+
+            if (contactorObj == null)
+            {
+                EditorUtility.DisplayDialog("Contactor Not Found", 
+                    "Could not find '3_pole_contactor_final' in scene or Assets. Ensure Assets/3_pole_contactor_final.fbx exists.", "OK");
+                return;
+            }
+
+            Undo.RegisterFullObjectHierarchyUndo(contactorObj, "Setup Contactor AR");
+
+            // Configure all 12 terminals, CJX2S-090018 armature, AR manipulator, colliders
+            ModelAssetLoader.ConfigureContactorInstance(contactorObj);
+
+            // Save configured prefab to Assets/Resources/Models/3_pole_contactor_final.prefab
+            string prefabDir = "Assets/Resources/Models";
+            if (!System.IO.Directory.Exists(prefabDir))
+            {
+                System.IO.Directory.CreateDirectory(prefabDir);
+                AssetDatabase.Refresh();
+            }
+            string prefabPath = $"{prefabDir}/3_pole_contactor_final.prefab";
+            PrefabUtility.SaveAsPrefabAssetAndConnect(contactorObj, prefabPath, InteractionMode.AutomatedAction);
+            Debug.Log($"[ContactorSceneSetupTool] Saved configured prefab to '{prefabPath}' for runtime loading.");
+
+            UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
+                UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene()
+            );
+
+            Selection.activeGameObject = contactorObj;
+
+            EditorUtility.DisplayDialog("Setup Successful!",
+                "3-Pole Industrial Contactor (3_pole_contactor_final) successfully configured!\n\n" +
+                "Features Ready:\n" +
+                "• Armature Plunger (CJX2S-090018): ON=y0.0126m, OFF=y0.0069m\n" +
+                "• 12 Connectable Terminals:\n" +
+                "    - Main: term_in_1..3, term_out_1..3\n" +
+                "    - Coil Supply: term_in_A1, term_in_A2\n" +
+                "    - Aux NO: term_no_u, term_no_d (13-14)\n" +
+                "    - Aux NC: term_nc_u, term_nc_d (21-22)\n" +
+                "• Electrical Coil Excitation via A1/A2 or UI Controls\n" +
+                "• Plunger Manual Touch / Override Support\n" +
+                "• Solenoid Sound Effects & Floating Voltage Labels\n" +
+                "• Saved to Assets/Resources/Models/3_pole_contactor_final.prefab", "Awesome!");
+        }
+
+        [MenuItem("Tools/Breaker & Contactor AR/Disable Default AR Template (UI & Spawner)", false, 3)]
         public static void DisableDefaultARTemplateMenu()
         {
             int count = DisableDefaultARTemplateInternal();

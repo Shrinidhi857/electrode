@@ -37,14 +37,14 @@ namespace ContactorAR.Breaker
         [SerializeField] private bool invertAxis = false;
 
         [Header("Angle Limits (Degrees)")]
-        [Tooltip("Angle corresponding to OFF state (70.0 deg).")]
-        [SerializeField] private float offAngle = 70.0f;
+        [Tooltip("Angle corresponding to OFF state (-70.0 deg).")]
+        [SerializeField] private float offAngle = -70.0f;
 
-        [Tooltip("Angle corresponding to ON state (-14.259 deg).")]
-        [SerializeField] private float onAngle = -14.259f;
+        [Tooltip("Angle corresponding to ON state (-160.0 deg).")]
+        [SerializeField] private float onAngle = -160.0f;
 
-        [Tooltip("Angle corresponding to TRIPPED state (middle position ~27.87 deg).")]
-        [SerializeField] private float tripAngle = 27.87f;
+        [Tooltip("Angle corresponding to TRIPPED state (middle position -115.0 deg).")]
+        [SerializeField] private float tripAngle = -115.0f;
 
         [Header("Motion Settings")]
         [Tooltip("Speed when smoothly moving to a commanded state.")]
@@ -55,19 +55,22 @@ namespace ContactorAR.Breaker
 
         [Header("State")]
         [SerializeField] private BreakerState currentState = BreakerState.Off;
-        [SerializeField] private float currentAngle = 70.0f;
+        [SerializeField] private float currentAngle = -70.0f;
 
         [Header("Events")]
         public UnityEvent<BreakerState> OnStateChanged;
         public UnityEvent<float, float> OnAngleChanged; // currentAngle, normalized (0 = off, 1 = on)
 
-        private Quaternion initialLocalRotation;
-        private float targetAngle = 70.0f;
+        private float targetAngle = -70.0f;
         private bool isAnimating = false;
         private bool isDragging = false;
         private Vector3 dragStartHit;
         private float dragStartAngle;
         private Camera mainCamera;
+        private float baseEulerX = 0f;
+        private float baseEulerY = 0f;
+        private float baseEulerZ = 0f;
+        private bool initialized = false;
 
         public float OffAngle => offAngle;
         public float OnAngle => onAngle;
@@ -77,16 +80,55 @@ namespace ContactorAR.Breaker
         public bool IsOn => currentState == BreakerState.On;
         public bool IsTripped => currentState == BreakerState.Tripped;
 
-        private void Awake()
+        /// <summary>
+        /// Programmatically configure the lever parameters.
+        /// </summary>
+        public void Configure(Transform pivot, float on, float off, float trip, RotationAxis axis = RotationAxis.X)
         {
-            if (pivotTransform == null)
+            pivotTransform = pivot;
+            onAngle = on;
+            offAngle = off;
+            tripAngle = trip;
+            rotationAxis = axis;
+
+            if (pivotTransform != null)
             {
-                // Try to find mcb_pivot child
-                Transform childPivot = transform.Find("mcb_pivot");
-                pivotTransform = childPivot != null ? childPivot : transform;
+                Vector3 euler = pivotTransform.localEulerAngles;
+                baseEulerX = euler.x;
+                baseEulerY = euler.y;
+                baseEulerZ = euler.z;
             }
 
-            initialLocalRotation = pivotTransform.localRotation;
+            initialized = true;
+            currentAngle = offAngle;
+            targetAngle = offAngle;
+            ApplyAngle(currentAngle);
+        }
+
+        private void Awake()
+        {
+            InitIfNeeded();
+        }
+
+        private void InitIfNeeded()
+        {
+            if (initialized) return;
+            initialized = true;
+
+            if (pivotTransform == null)
+            {
+                pivotTransform = FindDeepChild(transform, "mcb_pivot");
+                if (pivotTransform == null) pivotTransform = transform;
+            }
+
+            if (pivotTransform != null)
+            {
+                Vector3 euler = pivotTransform.localEulerAngles;
+                baseEulerX = euler.x;
+                baseEulerY = euler.y;
+                baseEulerZ = euler.z;
+            }
+
             currentAngle = offAngle;
             targetAngle = offAngle;
             ApplyAngle(currentAngle);
@@ -101,6 +143,19 @@ namespace ContactorAR.Breaker
                     audioSource.spatialBlend = 0.8f;
                 }
             }
+        }
+
+        private static Transform FindDeepChild(Transform parent, string childName)
+        {
+            if (parent == null || string.IsNullOrEmpty(childName)) return null;
+            foreach (Transform child in parent)
+            {
+                if (child.name.Equals(childName, StringComparison.OrdinalIgnoreCase))
+                    return child;
+                Transform found = FindDeepChild(child, childName);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         private void Start()
@@ -253,15 +308,18 @@ namespace ContactorAR.Breaker
             if (pivotTransform == null) return;
 
             float actualAngle = invertAxis ? -angle : angle;
-            Vector3 axisVector = rotationAxis switch
+            switch (rotationAxis)
             {
-                RotationAxis.X => Vector3.right,
-                RotationAxis.Y => Vector3.up,
-                RotationAxis.Z => Vector3.forward,
-                _ => Vector3.right
-            };
-
-            pivotTransform.localRotation = initialLocalRotation * Quaternion.AngleAxis(actualAngle, axisVector);
+                case RotationAxis.X:
+                    pivotTransform.localRotation = Quaternion.Euler(actualAngle, baseEulerY, baseEulerZ);
+                    break;
+                case RotationAxis.Y:
+                    pivotTransform.localRotation = Quaternion.Euler(baseEulerX, actualAngle, baseEulerZ);
+                    break;
+                case RotationAxis.Z:
+                    pivotTransform.localRotation = Quaternion.Euler(baseEulerX, baseEulerY, actualAngle);
+                    break;
+            }
         }
 
         private void PlaySoundEffect(BreakerState state)

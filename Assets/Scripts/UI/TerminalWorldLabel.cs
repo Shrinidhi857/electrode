@@ -12,11 +12,13 @@ namespace ContactorAR.UI
     /// </summary>
     public class TerminalWorldLabel : MonoBehaviour
     {
+        public const float WORLD_LABEL_SCALE = 0.00015f; // Compact AR readability scaled for real-world tabletop models
+
         [Header("Target Terminal")]
         [SerializeField] private TerminalPoint terminal;
 
         [Header("Floating Offset")]
-        [SerializeField] private Vector3 floatOffset = new Vector3(0f, 0.08f, 0f);
+        [SerializeField] private Vector3 floatOffset = new Vector3(0f, 0.012f, 0f);
 
         [Header("UI Elements")]
         [SerializeField] private Canvas worldCanvas;
@@ -30,6 +32,7 @@ namespace ContactorAR.UI
         {
             terminal = targetTerm;
             EnsureCanvasAndUI();
+            if (worldCanvas != null) worldCanvas.transform.localScale = Vector3.one * WORLD_LABEL_SCALE;
             UpdateLabelText();
         }
 
@@ -38,6 +41,7 @@ namespace ContactorAR.UI
             mainCamera = Camera.main;
             if (terminal == null) terminal = GetComponentInParent<TerminalPoint>();
             EnsureCanvasAndUI();
+            if (worldCanvas != null) worldCanvas.transform.localScale = Vector3.one * WORLD_LABEL_SCALE;
         }
 
         private void OnEnable()
@@ -106,7 +110,12 @@ namespace ContactorAR.UI
 
         private void EnsureCanvasAndUI()
         {
-            if (worldCanvas != null) return;
+            if (worldCanvas != null)
+            {
+                // Ensure scale matches new 3-5x smaller compact scale
+                worldCanvas.transform.localScale = Vector3.one * WORLD_LABEL_SCALE;
+                return;
+            }
 
             // Setup World Space Canvas
             worldCanvas = gameObject.GetComponent<Canvas>();
@@ -114,8 +123,8 @@ namespace ContactorAR.UI
             worldCanvas.renderMode = RenderMode.WorldSpace;
 
             RectTransform rect = worldCanvas.GetComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(160, 60);
-            rect.localScale = Vector3.one * 0.0018f; // Scaled down for world space
+            rect.sizeDelta = new Vector2(100, 36);
+            rect.localScale = Vector3.one * WORLD_LABEL_SCALE;
 
             // Background panel
             GameObject bgObj = new GameObject("BgPanel");
@@ -123,30 +132,30 @@ namespace ContactorAR.UI
             backgroundPlate = bgObj.AddComponent<Image>();
             backgroundPlate.color = new Color(0.08f, 0.12f, 0.18f, 0.85f);
             RectTransform bgRect = bgObj.GetComponent<RectTransform>();
-            bgRect.sizeDelta = new Vector2(160, 60);
+            bgRect.sizeDelta = new Vector2(100, 36);
 
             // Title Text
             GameObject titleObj = new GameObject("TitleText");
             titleObj.transform.SetParent(bgObj.transform, false);
             titleText = titleObj.AddComponent<TextMeshProUGUI>();
-            titleText.fontSize = 18;
+            titleText.fontSize = 13;
             titleText.alignment = TextAlignmentOptions.Center;
             titleText.fontStyle = FontStyles.Bold;
             titleText.text = terminal != null ? terminal.TerminalLabel : "TERMINAL";
             RectTransform tRect = titleObj.GetComponent<RectTransform>();
-            tRect.sizeDelta = new Vector2(150, 24);
-            tRect.anchoredPosition = new Vector2(0, 12);
+            tRect.sizeDelta = new Vector2(94, 16);
+            tRect.anchoredPosition = new Vector2(0, 8);
 
             // Status Text
             GameObject statusObj = new GameObject("StatusText");
             statusObj.transform.SetParent(bgObj.transform, false);
             statusText = statusObj.AddComponent<TextMeshProUGUI>();
-            statusText.fontSize = 14;
+            statusText.fontSize = 10;
             statusText.alignment = TextAlignmentOptions.Center;
             statusText.text = "0V";
             RectTransform sRect = statusObj.GetComponent<RectTransform>();
-            sRect.sizeDelta = new Vector2(150, 20);
-            sRect.anchoredPosition = new Vector2(0, -12);
+            sRect.sizeDelta = new Vector2(94, 14);
+            sRect.anchoredPosition = new Vector2(0, -8);
         }
 
         public void SetVisible(bool visible)

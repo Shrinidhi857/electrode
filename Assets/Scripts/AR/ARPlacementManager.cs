@@ -66,6 +66,9 @@ namespace ContactorAR.AR
         {
             if (arRaycastManager == null)
                 arRaycastManager = GetComponent<ARRaycastManager>();
+
+            if (contactorPrefab == null)
+                contactorPrefab = ModelAssetLoader.LoadMCBModel();
         }
 
         private void Start()
@@ -83,7 +86,7 @@ namespace ContactorAR.AR
             arActive = false;
             if (!modelPlaced && contactorPrefab != null && tapToPlace)
             {
-                PlaceModelAt(Vector3.forward * 1.0f, Quaternion.Euler(0, 180, 0));
+                PlaceModelAt(Vector3.forward * 0.50f, Quaternion.Euler(0, 180, 0));
             }
 #else
             arActive = true;
@@ -195,8 +198,11 @@ namespace ContactorAR.AR
         public void PlaceModelAt(Vector3 worldPosition, Quaternion worldRotation)
         {
             if (contactorPrefab == null)
+                contactorPrefab = ModelAssetLoader.LoadMCBModel();
+
+            if (contactorPrefab == null)
             {
-                Debug.LogWarning("[ARPlacementManager] No contactorPrefab assigned. Cannot place model.");
+                Debug.LogWarning("[ARPlacementManager] No contactorPrefab assigned and could not load from Assets. Cannot place model.");
                 return;
             }
 
@@ -208,6 +214,8 @@ namespace ContactorAR.AR
 
             // Spawn contactor model
             GameObject instance = Instantiate(contactorPrefab, worldPosition, worldRotation);
+            instance.name = ModelAssetLoader.MCB_MODEL_NAME;
+            ModelAssetLoader.ConfigureMCBInstance(instance);
             spawnedManipulator = instance.GetComponent<ARModelManipulator>();
             if (spawnedManipulator == null)
                 spawnedManipulator = instance.AddComponent<ARModelManipulator>();

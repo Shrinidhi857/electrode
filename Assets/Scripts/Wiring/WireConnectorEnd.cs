@@ -18,8 +18,11 @@ namespace ContactorAR.Wiring
         [Tooltip("Currently snapped terminal point, if connected.")]
         [SerializeField] private TerminalPoint snappedTerminal;
 
-        [Tooltip("Snap distance threshold.")]
-        [SerializeField] private float snapThreshold = 0.5f;
+        [Tooltip("Snap distance threshold (kept tight at 2.5cm so wires don't jump to adjacent models).")]
+        [SerializeField] private float snapThreshold = 0.025f;
+
+        [Tooltip("Minimum screen drag distance in pixels before an attached wire detaches.")]
+        [SerializeField] private float detachScreenThresholdPx = 25.0f;
 
         [Tooltip("Smooth lerp speed when snapping.")]
         [SerializeField] private float snapLerpSpeed = 16.0f;
@@ -41,6 +44,8 @@ namespace ContactorAR.Wiring
         private Material sphereMatInstance;
         // Tracks latest input position so Update() can drive the drag each frame
         private Vector3 currentDragScreenPos;
+        private Vector3 dragStartScreenPos;
+        private bool isDetachedFromTerminal = false;
 
         public CylindricalWire ParentWire => parentWire;
         public TerminalPoint SnappedTerminal => snappedTerminal;
@@ -129,12 +134,11 @@ namespace ContactorAR.Wiring
             if (mainCamera == null) return;
 
             isDragging = true;
+            dragStartScreenPos = touchPosition;
 
-            // Unsnap if currently connected
-            if (snappedTerminal != null)
-            {
-                Unsnap();
-            }
+            // If already connected, do NOT unsnap yet!
+            // Require a deliberate pull (detachScreenThresholdPx) before disconnecting.
+            isDetachedFromTerminal = (snappedTerminal == null);
 
             // Lock interaction depth to current distance from camera, clamped safely
             dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 4.0f);
@@ -143,6 +147,25 @@ namespace ContactorAR.Wiring
         public void DragToScreenPosition(Vector3 touchPosition, float pinchDistanceDelta = 0f)
         {
             if (!isDragging || mainCamera == null) return;
+
+            // If still attached to a terminal, check if user deliberately pulled past detach threshold
+            if (!isDetachedFromTerminal && snappedTerminal != null)
+            {
+                float screenMoved = Vector2.Distance(new Vector2(touchPosition.x, touchPosition.y), new Vector2(dragStartScreenPos.x, dragStartScreenPos.y));
+                if (screenMoved >= detachScreenThresholdPx)
+                {
+                    Unsnap();
+                    isDetachedFromTerminal = true;
+                    dragDistance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 4.0f);
+                }
+                else
+                {
+                    // Still held within threshold -> keep firmly locked to current terminal
+                    transform.position = snappedTerminal.SnapPosition;
+                    transform.rotation = snappedTerminal.transform.rotation;
+                    return;
+                }
+            }
 
             // Optional pinch depth adjustment
             if (Mathf.Abs(pinchDistanceDelta) > 0.001f)
@@ -170,6 +193,14 @@ namespace ContactorAR.Wiring
             if (!isDragging) return;
             isDragging = false;
 
+            // If never detached from original terminal, stay securely connected
+            if (!isDetachedFromTerminal && snappedTerminal != null)
+            {
+                transform.position = snappedTerminal.SnapPosition;
+                transform.rotation = snappedTerminal.transform.rotation;
+                return;
+            }
+
             // If a candidate terminal was found during drag, perform snap!
             if (closestCandidate != null && !closestCandidate.IsOccupied)
             {
@@ -192,9 +223,20 @@ namespace ContactorAR.Wiring
         #region Terminal Snapping
         private void ScanForNearbyTerminals()
         {
+            // Do NOT scan or seek other terminals if wire is currently attached and not detached!
+            if (snappedTerminal != null && !isDetachedFromTerminal)
+            {
+                if (closestCandidate != null)
+                {
+                    closestCandidate.SetHighlight(false);
+                    closestCandidate = null;
+                }
+                return;
+            }
+
             TerminalPoint[] terminals = FindObjectsByType<TerminalPoint>(FindObjectsSortMode.None);
             TerminalPoint best = null;
-            float bestDist = snapThreshold;
+            float bestDist = snapThreshold; // 0.025m = 2.5cm
 
             for (int i = 0; i < terminals.Length; i++)
             {

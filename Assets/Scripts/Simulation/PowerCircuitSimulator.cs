@@ -77,6 +77,14 @@ namespace ContactorAR.Simulation
 
         private void Start()
         {
+            if (contactor == null)
+            {
+                contactor = FindAnyObjectByType<ContactorController>();
+                if (contactor != null && contactor.Lever != null)
+                {
+                    contactor.Lever.OnStateChanged.AddListener(OnBreakerStateChanged);
+                }
+            }
             EvaluateCircuit();
         }
 

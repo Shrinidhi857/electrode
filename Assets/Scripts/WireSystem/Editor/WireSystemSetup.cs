@@ -14,13 +14,13 @@ namespace WireSystem.Editor
         [MenuItem("Tools/Wire System/1. Setup TerminalPorts on Breaker", false, 1)]
         public static void SetupTerminals()
         {
-            GameObject breaker = GameObject.Find("Four-Pole-Breaker-final");
+            GameObject breaker = GameObject.Find("3_pole_mcb_final");
             if (breaker == null)
             {
                 var candidates = Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
                 foreach (var c in candidates)
                 {
-                    if (c.name.Contains("Breaker") || c.name.Contains("Contactor"))
+                    if (c.name.Contains("3_pole_mcb") || c.name.Contains("Breaker") || c.name.Contains("Contactor"))
                     {
                         breaker = c.gameObject;
                         break;
@@ -28,10 +28,22 @@ namespace WireSystem.Editor
                 }
             }
 
+            // Fallback: load from Assets
+            if (breaker == null)
+            {
+                GameObject assetObj = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/3_pole_mcb_final.fbx");
+                if (assetObj != null)
+                {
+                    breaker = (GameObject)PrefabUtility.InstantiatePrefab(assetObj);
+                    breaker.name = "3_pole_mcb_final";
+                    Undo.RegisterCreatedObjectUndo(breaker, "Instantiate 3_pole_mcb_final");
+                }
+            }
+
             if (breaker == null)
             {
                 EditorUtility.DisplayDialog("Setup TerminalPorts",
-                    "Could not find 'Four-Pole-Breaker-final' in the active scene.\nPlease open SampleScene.", "OK");
+                    "Could not find '3_pole_mcb_final' in the active scene or Assets.\nPlease verify Assets/3_pole_mcb_final.fbx exists.", "OK");
                 return;
             }
 
@@ -73,6 +85,77 @@ namespace WireSystem.Editor
             Debug.Log($"[WireSystemSetup] Successfully configured {configuredCount} TerminalPorts on {breaker.name}!");
             EditorUtility.DisplayDialog("Setup Complete",
                 $"Configured {configuredCount} TerminalPorts on '{breaker.name}'.\nTerminals set to maxWires=1 with Up/Down exit directions.", "OK");
+        }
+
+        [MenuItem("Tools/Wire System/1b. Setup TerminalPorts on Contactor", false, 2)]
+        public static void SetupContactorTerminals()
+        {
+            GameObject contactor = GameObject.Find("3_pole_contactor_final");
+            if (contactor == null)
+            {
+                var candidates = Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
+                foreach (var c in candidates)
+                {
+                    if (c.name.Contains("3_pole_contactor") || (c.name.Contains("Contactor") && !c.name.Contains("Canvas")))
+                    {
+                        contactor = c.gameObject;
+                        break;
+                    }
+                }
+            }
+
+            if (contactor == null)
+            {
+                GameObject assetObj = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/3_pole_contactor_final.fbx");
+                if (assetObj != null)
+                {
+                    contactor = (GameObject)PrefabUtility.InstantiatePrefab(assetObj);
+                    contactor.name = "3_pole_contactor_final";
+                    Undo.RegisterCreatedObjectUndo(contactor, "Instantiate 3_pole_contactor_final");
+                }
+            }
+
+            if (contactor == null)
+            {
+                EditorUtility.DisplayDialog("Setup TerminalPorts",
+                    "Could not find '3_pole_contactor_final' in the active scene or Assets.\nPlease verify Assets/3_pole_contactor_final.fbx exists.", "OK");
+                return;
+            }
+
+            int configuredCount = 0;
+            (string name, string id, ExitDirection dir)[] terms = {
+                ("term_in_1",  "IN_1",    ExitDirection.Up),
+                ("term_in_2",  "IN_2",    ExitDirection.Up),
+                ("term_in_3",  "IN_3",    ExitDirection.Up),
+                ("term_out_1", "OUT_1",   ExitDirection.Down),
+                ("term_out_2", "OUT_2",   ExitDirection.Down),
+                ("term_out_3", "OUT_3",   ExitDirection.Down),
+                ("term_in_A1", "COIL_A1", ExitDirection.Up),
+                ("term_in_A2", "COIL_A2", ExitDirection.Down),
+                ("term_no_u",  "NO_U",    ExitDirection.Up),
+                ("term_no_d",  "NO_D",    ExitDirection.Down),
+                ("term_nc_u",  "NC_U",    ExitDirection.Up),
+                ("term_nc_d",  "NC_D",    ExitDirection.Down)
+            };
+
+            foreach (var t in terms)
+            {
+                Transform tr = FindDeepChild(contactor.transform, t.name);
+                if (tr != null)
+                {
+                    ConfigureTerminalPort(tr.gameObject, t.id, t.dir);
+                    configuredCount++;
+                }
+                else
+                {
+                    Debug.LogWarning($"[WireSystemSetup] Could not locate {t.name} under {contactor.name}");
+                }
+            }
+
+            EditorUtility.SetDirty(contactor);
+            Debug.Log($"[WireSystemSetup] Successfully configured {configuredCount} TerminalPorts on {contactor.name}!");
+            EditorUtility.DisplayDialog("Setup Complete",
+                $"Configured {configuredCount} TerminalPorts on '{contactor.name}'.\nAll 12 terminals ready for orthogonal wiring.", "OK");
         }
 
         private static void ConfigureTerminalPort(GameObject go, string id, ExitDirection exitDir)

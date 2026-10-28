@@ -35,47 +35,98 @@ namespace ContactorAR.Breaker
             System.Text.StringBuilder log = new System.Text.StringBuilder();
             log.AppendLine("=== ContactorAR Bootstrap ===");
 
+            // Target breaker GameObject: either this GameObject or loaded from Assets if missing
+            GameObject breakerObj = gameObject;
+            bool isSelfBreaker = GetComponent<ContactorController>() != null || 
+                                 GetComponent<MCBPivotLever>() != null || 
+                                 gameObject.name.ToLower().Contains("mcb") || 
+                                 gameObject.name.ToLower().Contains("breaker");
+
+            if (!isSelfBreaker)
+            {
+                ContactorController existing = FindAnyObjectByType<ContactorController>();
+                if (existing != null)
+                {
+                    breakerObj = existing.gameObject;
+                    log.AppendLine($"[OK] Found existing breaker in scene: {breakerObj.name}");
+                }
+                else
+                {
+                    // Load from Assets!
+                    breakerObj = ModelAssetLoader.EnsureMCBInScene();
+                    log.AppendLine($"[OK] Loaded MCB from Assets: {breakerObj.name}");
+                }
+            }
+
             // 1. Ensure ContactorController
-            ContactorController contactor = GetComponent<ContactorController>();
+            ContactorController contactor = breakerObj.GetComponent<ContactorController>();
             if (contactor == null)
             {
-                contactor = gameObject.AddComponent<ContactorController>();
+                contactor = breakerObj.AddComponent<ContactorController>();
                 log.AppendLine("[OK] ContactorController added.");
             }
             else log.AppendLine("[OK] ContactorController found.");
 
-            // 2. Ensure MCBPivotLever
-            MCBPivotLever lever = GetComponent<MCBPivotLever>();
+            // 2. Ensure MCBPivotLever with 3_pole_mcb_final settings (-160° ON / -70° OFF on X axis)
+            MCBPivotLever lever = breakerObj.GetComponent<MCBPivotLever>();
             if (lever == null)
             {
-                lever = gameObject.AddComponent<MCBPivotLever>();
+                lever = breakerObj.AddComponent<MCBPivotLever>();
                 log.AppendLine("[OK] MCBPivotLever added.");
             }
             else log.AppendLine("[OK] MCBPivotLever found.");
 
+            Transform pivotTrans = ModelAssetLoader.FindDeepChild(breakerObj.transform, "mcb_pivot");
+            if (pivotTrans != null)
+            {
+                lever.Configure(pivotTrans, ModelAssetLoader.MCB_ON_ANGLE, ModelAssetLoader.MCB_OFF_ANGLE, ModelAssetLoader.MCB_TRIP_ANGLE, RotationAxis.X);
+                log.AppendLine($"[OK] MCBPivotLever calibrated: ON={ModelAssetLoader.MCB_ON_ANGLE}°, OFF={ModelAssetLoader.MCB_OFF_ANGLE}°, TRIP={ModelAssetLoader.MCB_TRIP_ANGLE}° on X axis.");
+            }
+
             // 3. Ensure AR Manipulator
-            AR.ARModelManipulator arManip = GetComponent<AR.ARModelManipulator>();
+            AR.ARModelManipulator arManip = breakerObj.GetComponent<AR.ARModelManipulator>();
             if (arManip == null)
             {
-                arManip = gameObject.AddComponent<AR.ARModelManipulator>();
+                arManip = breakerObj.AddComponent<AR.ARModelManipulator>();
                 log.AppendLine("[OK] ARModelManipulator added.");
             }
             else log.AppendLine("[OK] ARModelManipulator found.");
 
-            // 4. Auto-discover terminals
-            contactor.AutoDiscoverTerminalsIfEmpty();
-            log.AppendLine($"[OK] Terminals discovered: {contactor.Poles.Count * 2} (8 total).");
+            // 4. Configure terminals & actuator based on model type
+            bool isContactor = breakerObj.name.ToLower().Contains("contactor") || breakerObj.GetComponent<ContactorArmatureController>() != null;
+            if (isContactor)
+            {
+                ModelAssetLoader.ConfigureContactorInstance(breakerObj);
+                log.AppendLine($"[OK] Configured as Contactor: 12 terminals, CJX2S-090018 armature plunger (ON=0.0126, OFF=0.0069).");
+            }
+            else
+            {
+                ModelAssetLoader.ConfigureMCBInstance(breakerObj);
+                contactor.AutoDiscoverTerminalsIfEmpty();
+                log.AppendLine($"[OK] Configured as MCB Breaker: 8 terminals (term_in_1..4, term_out_1..4), mcb_pivot.");
+            }
+
+            // Also check for any standalone contactor in the scene
+            ContactorArmatureController[] allContactors = FindObjectsByType<ContactorArmatureController>(FindObjectsSortMode.None);
+            foreach (var ct in allContactors)
+            {
+                if (ct.gameObject != breakerObj)
+                {
+                    ModelAssetLoader.ConfigureContactorInstance(ct.gameObject);
+                    log.AppendLine($"[OK] Configured additional contactor in scene: {ct.name}");
+                }
+            }
 
             // 5. Ensure ElectricalEffectsManager
-            Simulation.ElectricalEffectsManager effects = GetComponent<Simulation.ElectricalEffectsManager>();
+            Simulation.ElectricalEffectsManager effects = breakerObj.GetComponent<Simulation.ElectricalEffectsManager>();
             if (effects == null)
             {
-                effects = gameObject.AddComponent<Simulation.ElectricalEffectsManager>();
+                effects = breakerObj.AddComponent<Simulation.ElectricalEffectsManager>();
                 log.AppendLine("[OK] ElectricalEffectsManager added.");
             }
 
             // 6. Validate global managers
-            Simulation.PowerCircuitSimulator sim = FindFirstObjectByType<Simulation.PowerCircuitSimulator>();
+            Simulation.PowerCircuitSimulator sim = FindAnyObjectByType<Simulation.PowerCircuitSimulator>();
             if (sim == null)
             {
                 GameObject simObj = new GameObject("CircuitSimulator");
@@ -86,29 +137,26 @@ namespace ContactorAR.Breaker
             }
             else log.AppendLine("[OK] PowerCircuitSimulator found.");
 
-            // 7. Validate distance from camera (prevent spawning 12m away where camera walks past it)
+            // 7. Validate distance from camera (keep model 1-2 feet / ~0.50m directly in front)
             Camera cam = Camera.main;
-            if (cam != null)
+            if (cam != null && breakerObj != null)
             {
-                float dist = Vector3.Distance(transform.position, cam.transform.position);
-                if (dist > 3.0f || transform.position.z > 3.0f)
+                float dist = Vector3.Distance(breakerObj.transform.position, cam.transform.position);
+                if (dist > 1.2f || breakerObj.transform.position.z > 1.2f)
                 {
-                    Vector3 calibratedPos = cam.transform.position + cam.transform.forward * 0.85f;
-                    transform.position = calibratedPos;
-                    transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
-                    log.AppendLine($"[CALIBRATED] Breaker brought from far distance ({dist:F1}m) to 0.85m directly in front of camera.");
+                    Vector3 calibratedPos = cam.transform.position + cam.transform.forward * ModelAssetLoader.SPAWN_DISTANCE;
+                    breakerObj.transform.position = calibratedPos;
+                    breakerObj.transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
+                    log.AppendLine($"[CALIBRATED] Model positioned 1-2 feet ({ModelAssetLoader.SPAWN_DISTANCE:F2}m) directly in front of camera.");
                 }
             }
 
             // 8. Validate scale
-            float scaleX = transform.localScale.x;
-            if (scaleX < 0.05f || scaleX > 200f)
+            if (breakerObj != null)
             {
-                log.AppendLine($"[WARN] Scale looks unusual: {transform.localScale}. Consider resetting to (1,1,1) base.");
-            }
-            else
-            {
-                log.AppendLine($"[OK] Scale: {transform.localScale}");
+                float targetScale = isContactor ? ModelAssetLoader.CONTACTOR_DEFAULT_SCALE : ModelAssetLoader.MCB_DEFAULT_SCALE;
+                breakerObj.transform.localScale = Vector3.one * targetScale;
+                log.AppendLine($"[OK] Scale calibrated: {breakerObj.transform.localScale}");
             }
 
             // 9. Lock model in place to prevent drift

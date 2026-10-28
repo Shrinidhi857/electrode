@@ -500,15 +500,31 @@ namespace ContactorAR.AR
             Ray ray = mainCamera.ScreenPointToRay(screenPos);
             RaycastHit[] hits = Physics.RaycastAll(ray, 50f, interactableMask);
 
-            // Priority 1: Wire connector end
+            // Priority 1: Free (unconnected) wire connector ends
+            WireConnectorEnd connectedWireEndHit = null;
+            bool hitModelOrLever = false;
+
             foreach (var hit in hits)
             {
                 WireConnectorEnd wireEnd = hit.collider.GetComponent<WireConnectorEnd>();
                 if (wireEnd != null)
                 {
-                    activeWireEnd = wireEnd;
-                    activeWireEnd.StartDragging(screenPos);
-                    return;
+                    if (!wireEnd.IsConnected)
+                    {
+                        activeWireEnd = wireEnd;
+                        activeWireEnd.StartDragging(screenPos);
+                        return;
+                    }
+                    else if (connectedWireEndHit == null)
+                    {
+                        connectedWireEndHit = wireEnd;
+                    }
+                }
+
+                if (hit.collider.GetComponentInParent<MCBPivotLever>() != null || 
+                    (hit.collider.GetComponentInParent<ARModelManipulator>() != null && hit.collider.GetComponent<WireConnectorEnd>() == null))
+                {
+                    hitModelOrLever = true;
                 }
             }
 
@@ -535,7 +551,15 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Priority 4: 3D Movement of THIS selected model
+            // Priority 4: Connected wire end (only if specifically tapped and not touching model body)
+            if (connectedWireEndHit != null && !hitModelOrLever)
+            {
+                activeWireEnd = connectedWireEndHit;
+                activeWireEnd.StartDragging(screenPos);
+                return;
+            }
+
+            // Priority 5: 3D Movement of THIS selected model
             // Touching on the model or anywhere in 3D space freely moves this selected model
             if (placementMode == PlacementMode.FreeMovable)
             {

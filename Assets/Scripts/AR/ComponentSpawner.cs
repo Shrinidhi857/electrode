@@ -44,8 +44,8 @@ namespace ContactorAR.AR
         [SerializeField] public List<ComponentEntry> components = new List<ComponentEntry>();
 
         [Header("Placement Settings")]
-        [Tooltip("Distance in front of the camera at which a new model is spawned.")]
-        [SerializeField] private float spawnDistance = 1.5f;
+        [Tooltip("Distance in front of the camera at which a new model is spawned (1-2 feet = ~0.5m).")]
+        [SerializeField] private float spawnDistance = 0.50f;
 
         // All live model instances tracked by this spawner
         private readonly List<SpawnedModel> liveModels = new List<SpawnedModel>();
@@ -81,11 +81,32 @@ namespace ContactorAR.AR
                 if (string.IsNullOrEmpty(displayName)) displayName = entry.displayName;
             }
 
-            // 2. Fallback: Find existing contactor/breaker in scene to clone
+            // 2. Load directly from Assets via ModelAssetLoader
+            if (sourceGO == null)
+            {
+                string query = !string.IsNullOrEmpty(displayName) ? displayName.ToLowerInvariant() : "";
+                if (query.Contains("mcb") || query.Contains("breaker") || index == 0)
+                {
+                    sourceGO = ModelAssetLoader.LoadMCBModel();
+                    if (string.IsNullOrEmpty(displayName)) displayName = "MCB";
+                }
+                else if (query.Contains("contactor") || index == 1)
+                {
+                    sourceGO = ModelAssetLoader.LoadContactorModel();
+                    if (string.IsNullOrEmpty(displayName)) displayName = "Contactor";
+                }
+                else if (query.Contains("motor"))
+                {
+                    sourceGO = ModelAssetLoader.LoadMotorModel();
+                    if (string.IsNullOrEmpty(displayName)) displayName = "Motor";
+                }
+            }
+
+            // 3. Fallback: Find existing contactor/breaker in scene to clone
             if (sourceGO == null)
             {
                 // First try ContactorController
-                ContactorController cc = FindFirstObjectByType<ContactorController>();
+                ContactorController cc = FindAnyObjectByType<ContactorController>();
                 if (cc != null)
                 {
                     sourceGO = cc.transform.root.gameObject;
@@ -94,7 +115,7 @@ namespace ContactorAR.AR
                 else
                 {
                     // Second try any object with TerminalPort
-                    TerminalPort anyPort = FindFirstObjectByType<TerminalPort>();
+                    TerminalPort anyPort = FindAnyObjectByType<TerminalPort>();
                     if (anyPort != null)
                     {
                         sourceGO = anyPort.transform.root.gameObject;
@@ -106,6 +127,7 @@ namespace ContactorAR.AR
                         string query = !string.IsNullOrEmpty(displayName) ? displayName : "Breaker";
                         sourceGO = FindSceneObjectByName(query)
                                 ?? FindSceneObjectByName("Contactor")
+                                ?? FindSceneObjectByName("3_pole_mcb")
                                 ?? FindSceneObjectByName("Four-Pole");
                     }
                 }
@@ -117,13 +139,28 @@ namespace ContactorAR.AR
                 return null;
             }
 
-            // Determine spawn position & rotation
+            // Determine spawn position & rotation: always 1-2 feet directly in front of camera, facing user
             Vector3 spawnPos = GetSpawnPosition(sourceGO);
-            Quaternion spawnRot = sourceGO.transform.rotation;
+            Quaternion spawnRot = (mainCam != null)
+                ? Quaternion.LookRotation(-mainCam.transform.forward, Vector3.up)
+                : Quaternion.Euler(0, 180, 0);
 
             int cloneNumber = liveModels.Count + 1;
             GameObject newInstance = Instantiate(sourceGO, spawnPos, spawnRot);
             newInstance.name = $"{displayName ?? "Component"}_{cloneNumber}";
+            newInstance.transform.position = spawnPos;
+            newInstance.transform.rotation = spawnRot;
+
+            // Configure MCB instance if loaded from raw asset
+            if (displayName != null && (displayName.Contains("MCB") || displayName.Contains("Breaker") || newInstance.name.ToLowerInvariant().Contains("mcb")))
+            {
+                ModelAssetLoader.ConfigureMCBInstance(newInstance);
+            }
+            // Configure Contactor instance if loaded from raw asset
+            else if (displayName != null && (displayName.Contains("Contactor") || displayName.Contains("contactor") || newInstance.name.ToLowerInvariant().Contains("contactor")))
+            {
+                ModelAssetLoader.ConfigureContactorInstance(newInstance);
+            }
 
             // Ensure the model has ARModelManipulator for repositioning
             ARModelManipulator manip = newInstance.GetComponent<ARModelManipulator>();
@@ -164,22 +201,23 @@ namespace ContactorAR.AR
         {
             if (mainCam == null) mainCam = Camera.main;
 
-            // If sourceGO is in front of the camera, place the new one side-by-side to the right (DIN rail style)
-            if (sourceGO != null && mainCam != null)
+            // If we already have models live in the scene, place the new one side-by-side to the right (9cm DIN rail spacing)
+            if (liveModels.Count > 0 && liveModels[liveModels.Count - 1].GameObject != null)
             {
-                Transform refTrans = liveModels.Count > 0 ? liveModels[liveModels.Count - 1].GameObject.transform : sourceGO.transform;
-                Vector3 toRef = refTrans.position - mainCam.transform.position;
-                if (Vector3.Dot(mainCam.transform.forward, toRef.normalized) > 0.1f && toRef.magnitude < 6f)
+                Transform refTrans = liveModels[liveModels.Count - 1].GameObject.transform;
+                Vector3 toRef = refTrans.position - (mainCam != null ? mainCam.transform.position : Vector3.zero);
+                if (mainCam != null && Vector3.Dot(mainCam.transform.forward, toRef.normalized) > 0.1f && toRef.magnitude < 3f)
                 {
-                    Vector3 rightDir = refTrans.right;
-                    return refTrans.position + rightDir * 0.32f;
+                    Vector3 rightDir = mainCam.transform.right;
+                    return refTrans.position + rightDir * 0.09f;
                 }
             }
 
+            // Default: 1-2 feet (0.50m) directly in front of camera
             if (mainCam != null)
                 return mainCam.transform.position + mainCam.transform.forward * spawnDistance;
 
-            return sourceGO != null ? sourceGO.transform.position + Vector3.right * 0.32f : Vector3.zero;
+            return new Vector3(0f, 0f, spawnDistance);
         }
 
         /// <summary>

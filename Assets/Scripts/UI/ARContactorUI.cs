@@ -7,7 +7,6 @@ using ContactorAR.Breaker;
 using ContactorAR.Wiring;
 using ContactorAR.Simulation;
 using ContactorAR.AR;
-
 namespace ContactorAR.UI
 {
     /// <summary>
@@ -26,6 +25,14 @@ namespace ContactorAR.UI
         [SerializeField] private PowerCircuitSimulator simulator;
         [SerializeField] private WireSpawner wireSpawner;
         [SerializeField] private ComponentSpawner componentSpawner;
+
+        [Header("Contactor Coil")]
+        [SerializeField] private ContactorArmatureController armatureController;
+        private Button buttonCoilOn;
+        private Button buttonCoilOff;
+        private Button buttonCoilToggle;
+        private Button buttonManualPress;
+        private TextMeshProUGUI contactorStatusText;
 
         [Header("UI Status Elements")]
         [SerializeField] private TextMeshProUGUI statusBannerText;
@@ -91,6 +98,7 @@ namespace ContactorAR.UI
             if (wireSpawner == null)       wireSpawner       = FindFirstObjectByType<WireSpawner>();
             if (componentSpawner == null)  componentSpawner  = FindFirstObjectByType<ComponentSpawner>();
             if (componentSpawner == null)  componentSpawner  = gameObject.AddComponent<ComponentSpawner>();
+            if (armatureController == null) armatureController = FindFirstObjectByType<ContactorArmatureController>();
         }
 
         private void BindButtonEvents()
@@ -104,6 +112,12 @@ namespace ContactorAR.UI
             SafeBind(buttonClearWires,      OnClearWiresClicked);
             SafeBind(buttonToggleLabels,    OnToggleLabelsClicked);
             SafeBind(buttonRotateModel,     OnRotateClicked);
+
+            // Contactor coil buttons
+            SafeBind(buttonCoilOn,      OnCoilOnClicked);
+            SafeBind(buttonCoilOff,     OnCoilOffClicked);
+            SafeBind(buttonCoilToggle,  OnCoilToggleClicked);
+            SafeBind(buttonManualPress, OnManualPressClicked);
         }
 
         private static void SafeBind(Button btn, UnityEngine.Events.UnityAction action)
@@ -114,16 +128,19 @@ namespace ContactorAR.UI
         #region Button Actions
         public void OnTurnOnClicked()
         {
+            if (contactor == null) FindSceneReferencesIfNull();
             if (contactor != null) contactor.SwitchOn();
         }
 
         public void OnTurnOffClicked()
         {
+            if (contactor == null) FindSceneReferencesIfNull();
             if (contactor != null) contactor.SwitchOff();
         }
 
         public void OnTripClicked()
         {
+            if (contactor == null) FindSceneReferencesIfNull();
             if (contactor != null) contactor.TriggerOverloadTrip("Manual Test Trip");
         }
 
@@ -190,6 +207,67 @@ namespace ContactorAR.UI
 
             componentSpawner.SpawnComponent(index, componentName);
         }
+
+        // ── Contactor coil actions ────────────────────────────────────
+        private ContactorArmatureController GetArmature()
+        {
+            if (armatureController == null)
+                armatureController = FindFirstObjectByType<ContactorArmatureController>();
+            return armatureController;
+        }
+
+        public void OnCoilOnClicked()
+        {
+            GetArmature()?.Energize();
+            UpdateContactorStatus();
+        }
+
+        public void OnCoilOffClicked()
+        {
+            GetArmature()?.Release();
+            UpdateContactorStatus();
+        }
+
+        public void OnCoilToggleClicked()
+        {
+            GetArmature()?.Toggle();
+            UpdateContactorStatus();
+        }
+
+        private bool _manualPressHeld = false;
+        public void OnManualPressClicked()
+        {
+            _manualPressHeld = !_manualPressHeld;
+            GetArmature()?.SetManualOverride(_manualPressHeld);
+            if (buttonManualPress != null)
+            {
+                TextMeshProUGUI lbl = buttonManualPress.GetComponentInChildren<TextMeshProUGUI>();
+                if (lbl != null) lbl.text = _manualPressHeld ? "RELEASE PLUNGER" : "MANUAL PRESS";
+            }
+            UpdateContactorStatus();
+        }
+
+        private void UpdateContactorStatus()
+        {
+            if (contactorStatusText == null) return;
+            ContactorArmatureController arm = GetArmature();
+            if (arm == null)
+            {
+                contactorStatusText.text  = "CONTACTOR: NOT FOUND";
+                contactorStatusText.color = Color.gray;
+                return;
+            }
+            if (arm.IsEnergized)
+            {
+                contactorStatusText.text  = $"CONTACTOR: ENERGIZED  y={arm.CurrentY:F4}m";
+                contactorStatusText.color = new Color(0.2f, 0.9f, 0.3f);
+            }
+            else
+            {
+                contactorStatusText.text  = $"CONTACTOR: RELEASED   y={arm.CurrentY:F4}m";
+                contactorStatusText.color = new Color(0.9f, 0.3f, 0.25f);
+            }
+        }
         #endregion
 
         #region Telemetry Updates
@@ -247,6 +325,9 @@ namespace ContactorAR.UI
                 string mName = target.gameObject.name;
                 hangButtonLabel.text = isLocked ? $"MOVE: {mName}" : $"LOCK: {mName}";
             }
+
+            // 5. Contactor status
+            UpdateContactorStatus();
         }
         #endregion
 
@@ -272,6 +353,7 @@ namespace ContactorAR.UI
 
             BuildTopPanel();
             BuildBottomPanel();
+            BuildContactorPanel();
             BuildSidebarPanel();
         }
 
@@ -355,6 +437,56 @@ namespace ContactorAR.UI
 
             buttonRotateModel = CreateButton("BtnRotate", bottomPanel.transform, "ROTATE 90°",
                 new Color(0.38f, 0.28f, 0.58f), new Vector2(450f, row2Y), new Vector2(sW, sH), 22f);
+        }
+
+        // ── Contactor coil control panel (right-side, vertically stacked) ──
+        private void BuildContactorPanel()
+        {
+            float panelW = 220f;
+            float panelH = 320f;
+
+            GameObject ctPanel = CreatePanel("ContactorPanel", transform,
+                anchorMin: new Vector2(1f, 0.5f), anchorMax: new Vector2(1f, 0.5f),
+                pivot: new Vector2(1f, 0.5f),
+                anchoredPos: new Vector2(0f, 0f),
+                sizeDelta: new Vector2(panelW, panelH));
+            SetPanelColor(ctPanel, new Color(0.05f, 0.12f, 0.08f, 0.94f));
+
+            // Header
+            TextMeshProUGUI header = CreateText("ContactorHeader", ctPanel.transform,
+                "CONTACTOR", 18f, TextAlignmentOptions.Center,
+                new Vector2(0f, 138f), new Vector2(panelW - 8f, 26f));
+            header.fontStyle = FontStyles.Bold | FontStyles.SmallCaps;
+            header.color = new Color(0.3f, 1f, 0.45f);
+
+            // Status line
+            contactorStatusText = CreateText("ContactorStatus", ctPanel.transform,
+                "RELEASED   y=0.0069m", 14f, TextAlignmentOptions.Center,
+                new Vector2(0f, 110f), new Vector2(panelW - 8f, 24f));
+            contactorStatusText.color = new Color(0.9f, 0.3f, 0.25f);
+
+            float btnW = panelW - 16f;
+            float btnH = 48f;
+            float gap   = 6f;
+            float startY = 72f;
+
+            buttonCoilOn = CreateButton("BtnCoilOn", ctPanel.transform, "COIL ON",
+                new Color(0.12f, 0.62f, 0.22f), new Vector2(0f, startY), new Vector2(btnW, btnH), 20f);
+
+            buttonCoilOff = CreateButton("BtnCoilOff", ctPanel.transform, "COIL OFF",
+                new Color(0.72f, 0.15f, 0.15f), new Vector2(0f, startY - (btnH + gap)), new Vector2(btnW, btnH), 20f);
+
+            buttonCoilToggle = CreateButton("BtnCoilToggle", ctPanel.transform, "TOGGLE",
+                new Color(0.18f, 0.42f, 0.72f), new Vector2(0f, startY - 2f * (btnH + gap)), new Vector2(btnW, btnH), 20f);
+
+            buttonManualPress = CreateButton("BtnManualPress", ctPanel.transform, "MANUAL PRESS",
+                new Color(0.55f, 0.35f, 0.08f), new Vector2(0f, startY - 3f * (btnH + gap)), new Vector2(btnW, btnH), 18f);
+
+            // Re-bind newly created buttons
+            SafeBind(buttonCoilOn,      OnCoilOnClicked);
+            SafeBind(buttonCoilOff,     OnCoilOffClicked);
+            SafeBind(buttonCoilToggle,  OnCoilToggleClicked);
+            SafeBind(buttonManualPress, OnManualPressClicked);
         }
 
         // ── Left-side scrollable component browser sidebar ────────────
