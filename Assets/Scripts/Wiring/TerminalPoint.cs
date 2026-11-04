@@ -173,6 +173,20 @@ namespace ContactorAR.Wiring
         }
 
         /// <summary>
+        /// Disconnects any currently connected wire end.
+        /// </summary>
+        public void Disconnect()
+        {
+            if (connectedEnd != null)
+            {
+                WireConnectorEnd end = connectedEnd;
+                connectedEnd = null;
+                SetElectricalState(false, 0f, "");
+                OnWireDisconnected?.Invoke(this, end);
+            }
+        }
+
+        /// <summary>
         /// Clears any connected wire end and resets electrical state (useful when duplicating/cloning).
         /// </summary>
         public void ResetConnection()

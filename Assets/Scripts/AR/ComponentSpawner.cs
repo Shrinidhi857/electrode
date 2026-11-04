@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using ContactorAR.Breaker;
+using ContactorAR.Wiring;
 
 namespace ContactorAR.AR
 {
@@ -165,6 +166,7 @@ namespace ContactorAR.AR
             ARModelManipulator manip = newInstance.GetComponent<ARModelManipulator>();
             if (manip == null) manip = newInstance.AddComponent<ARModelManipulator>();
             manip.ReleaseToFreeMovable();
+            manip.AnchorAtCurrentPose(); // Register native anchor at spawn pose
             manip.RefreshScaleBounds(); // Recalibrate pinch-to-scale after scale was set by Configure*()
 
             // Reset wire connections and generate unique IDs for all terminals on the new instance
@@ -196,6 +198,66 @@ namespace ContactorAR.AR
 
         /// <summary>Returns a snapshot list of all live spawned models.</summary>
         public IReadOnlyList<SpawnedModel> LiveModels => liveModels;
+
+        public void UnregisterModel(GameObject modelGO)
+        {
+            if (modelGO == null) return;
+            for (int i = liveModels.Count - 1; i >= 0; i--)
+            {
+                if (liveModels[i] == null || liveModels[i].GameObject == modelGO || liveModels[i].GameObject == null)
+                {
+                    liveModels.RemoveAt(i);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Permanently removes a model instance, cleans up its attached wires and labels,
+        /// and records the action with UndoService.
+        /// </summary>
+        public void DeleteModel(ARModelManipulator manipulator)
+        {
+            if (manipulator == null) return;
+            GameObject go = manipulator.gameObject;
+
+            // 1. Clean up and remove all wires attached to any of this model's terminals
+            WireSpawner wireSpawner = FindFirstObjectByType<WireSpawner>();
+            ContactorAR.Wiring.TerminalPoint[] terminals = go.GetComponentsInChildren<ContactorAR.Wiring.TerminalPoint>(true);
+            for (int i = 0; i < terminals.Length; i++)
+            {
+                var term = terminals[i];
+                if (term != null && term.ConnectedEnd != null)
+                {
+                    CylindricalWire wire = term.ConnectedEnd.ParentWire;
+                    if (wire != null)
+                    {
+                        if (wireSpawner != null) wireSpawner.RemoveWire(wire);
+                        else Destroy(wire.gameObject);
+                    }
+                }
+            }
+
+            // 2. Remove floating labels
+            ContactorAR.UI.TerminalWorldLabel[] labels = go.GetComponentsInChildren<ContactorAR.UI.TerminalWorldLabel>(true);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                if (labels[i] != null) Destroy(labels[i].gameObject);
+            }
+
+            // 3. Unregister
+            UnregisterModel(go);
+
+            // 4. Clear selection if this model was selected
+            if (ARModelManipulator.Selected == manipulator)
+            {
+                ARModelManipulator.Select(null);
+            }
+
+            // 5. Record undo and deactivate/destroy
+            ContactorAR.UndoSystem.UndoService.RecordAction(new ContactorAR.UndoSystem.DeleteObjectUndoAction(go));
+            go.SetActive(false);
+            Destroy(go, 6.0f); // Destroy after 6s (safe after 5s undo window)
+        }
 
         private Vector3 GetSpawnPosition(GameObject sourceGO = null)
         {

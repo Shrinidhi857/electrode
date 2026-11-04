@@ -30,13 +30,13 @@ namespace ContactorAR.Wiring
         [SerializeField] private WireRoutingStyle routingStyle = WireRoutingStyle.PipelineElbow;
 
         [Header("Cylindrical Geometry (Thin & Sleek)")]
-        [Tooltip("Outer radius of the wire. Kept thin and realistic (3.5mm radius = 7mm diameter).")]
-        [Range(0.0015f, 0.015f)]
-        [SerializeField] private float wireRadius = 0.0035f;
+        [Tooltip("Outer radius of the wire. Kept thin and realistic (1.6mm radius = 3.2mm diameter).")]
+        [Range(0.0008f, 0.008f)]
+        [SerializeField] private float wireRadius = 0.0016f;
 
-        [Tooltip("Size multiplier for the spherical snap connector ends.")]
-        [Range(1.8f, 4.0f)]
-        [SerializeField] private float sphereScaleMultiplier = 2.6f;
+        [Tooltip("Size multiplier for the spherical snap connector ends (~1.5x wire radius = 4.8mm diameter).")]
+        [Range(1.2f, 2.5f)]
+        [SerializeField] private float sphereScaleMultiplier = 1.5f;
 
         [Tooltip("Number of radial sides forming the cylinder cross-section.")]
         [Range(6, 16)]
@@ -46,9 +46,9 @@ namespace ContactorAR.Wiring
         [Range(12, 48)]
         [SerializeField] private int curveSegments = 28;
 
-        [Tooltip("Corner rounding radius for 90-degree pipeline elbows.")]
-        [Range(0.005f, 0.04f)]
-        [SerializeField] private float elbowCornerRadius = 0.016f;
+        [Tooltip("Corner rounding radius for 90-degree pipeline elbows (~8mm).")]
+        [Range(0.004f, 0.02f)]
+        [SerializeField] private float elbowCornerRadius = 0.008f;
 
         [Header("Wire Aesthetics")]
         [SerializeField] private Color wireColor = new Color(0.85f, 0.15f, 0.15f, 1.0f); // Default Red (L1)
@@ -66,6 +66,31 @@ namespace ContactorAR.Wiring
         public float Voltage => voltage;
         public string PhaseName => phaseName;
         public float WireRadius => wireRadius;
+
+        private bool isSelected = false;
+        public bool IsSelected => isSelected;
+
+        public void SetSelected(bool selected)
+        {
+            if (isSelected == selected) return;
+            isSelected = selected;
+            UpdateVisualAppearance();
+        }
+
+        public void DeleteWire()
+        {
+            WireSpawner spawner = GetComponentInParent<WireSpawner>() ?? FindFirstObjectByType<WireSpawner>();
+            if (spawner != null)
+            {
+                spawner.RemoveWire(this);
+            }
+            else
+            {
+                if (endA != null && endA.SnappedTerminal != null) endA.SnappedTerminal.Disconnect();
+                if (endB != null && endB.SnappedTerminal != null) endB.SnappedTerminal.Disconnect();
+                Destroy(gameObject);
+            }
+        }
 
         /// <summary>
         /// A wire is only complete and establishes circuit flow when BOTH ends are attached to actual terminals.
@@ -168,13 +193,13 @@ namespace ContactorAR.Wiring
             sphere.transform.SetParent(transform, true);
             sphere.transform.position = pos;
 
-            // Small, sleek metallic connector sphere
-            float sphereRadius = Mathf.Max(wireRadius * sphereScaleMultiplier, 0.008f);
+            // Small, sleek metallic connector sphere (~4.8mm diameter, matches 5.8cm breaker terminals)
+            float sphereRadius = wireRadius * sphereScaleMultiplier;
             sphere.transform.localScale = Vector3.one * (sphereRadius * 2.0f);
 
             // Generous touch collider so user can easily grab it with a finger
             SphereCollider sc = sphere.GetComponent<SphereCollider>();
-            sc.radius = 1.6f;
+            sc.radius = 2.5f;
 
             WireConnectorEnd conn = sphere.AddComponent<WireConnectorEnd>();
             return conn;
@@ -201,6 +226,17 @@ namespace ContactorAR.Wiring
         {
             if (wireMaterial == null) return;
 
+            if (isSelected)
+            {
+                Color c = wireColor;
+                c.a = 1.0f;
+                wireMaterial.color = c;
+                wireMaterial.SetColor("_BaseColor", c);
+                wireMaterial.EnableKeyword("_EMISSION");
+                wireMaterial.SetColor("_EmissionColor", new Color(0.2f, 0.75f, 1.0f) * 2.2f);
+                return;
+            }
+
             if (IsFullyConnected)
             {
                 // Solid, full-opacity active circuit conduit
@@ -216,6 +252,17 @@ namespace ContactorAR.Wiring
                 c.a = 0.65f;
                 wireMaterial.color = c;
                 wireMaterial.SetColor("_BaseColor", c);
+            }
+
+            if (isEnergized)
+            {
+                wireMaterial.EnableKeyword("_EMISSION");
+                wireMaterial.SetColor("_EmissionColor", energizedGlowColor * 1.8f);
+            }
+            else
+            {
+                wireMaterial.DisableKeyword("_EMISSION");
+                wireMaterial.SetColor("_EmissionColor", Color.black);
             }
         }
 
@@ -349,6 +396,11 @@ namespace ContactorAR.Wiring
             proceduralMesh.uv = uvs;
             proceduralMesh.triangles = triangles;
             proceduralMesh.RecalculateBounds();
+
+            MeshCollider mc = GetComponent<MeshCollider>();
+            if (mc == null) mc = gameObject.AddComponent<MeshCollider>();
+            mc.sharedMesh = null;
+            mc.sharedMesh = proceduralMesh;
         }
 
         /// <summary>

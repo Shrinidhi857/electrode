@@ -268,7 +268,16 @@ namespace ContactorAR.Wiring
                 snappedTerminal = terminal;
                 transform.position = terminal.SnapPosition;
                 transform.rotation = terminal.transform.rotation;
-                transform.SetParent(terminal.transform, true); // Physically anchor to terminal
+
+                // Keep sphere under parentWire (scale 1,1,1) — DO NOT parent to terminal.transform
+                // which has scale 0.008 (MCB) and would blow up this sphere by 125x!
+                if (parentWire != null)
+                {
+                    transform.SetParent(parentWire.transform, true);
+                    float sphereRadius = parentWire.WireRadius * 1.5f;
+                    transform.localScale = Vector3.one * (sphereRadius * 2.0f);
+                }
+
                 OnSnapped?.Invoke(this, terminal);
 
                 if (parentWire != null)
@@ -284,7 +293,14 @@ namespace ContactorAR.Wiring
             {
                 TerminalPoint prev = snappedTerminal;
                 snappedTerminal = null;
-                transform.SetParent(parentWire != null ? parentWire.transform : null, true); // Restore parent
+
+                if (parentWire != null)
+                {
+                    transform.SetParent(parentWire.transform, true);
+                    float sphereRadius = parentWire.WireRadius * 1.5f;
+                    transform.localScale = Vector3.one * (sphereRadius * 2.0f);
+                }
+
                 prev.Disconnect(this);
                 OnUnsnapped?.Invoke(this);
 

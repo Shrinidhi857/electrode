@@ -19,14 +19,14 @@ public class Wire : MonoBehaviour
     [Tooltip("Color tint applied to the wire.")]
     public Color wireColor = new Color(0.92f, 0.22f, 0.22f, 1f);
 
-    [Tooltip("Radius of the cylindrical wire segments in world meters (10-15x thicker than default 3mm -> 0.04m).")]
-    public float wireRadius = 0.04f;
+    [Tooltip("Radius of the cylindrical wire segments in world meters (~1.6mm radius = 3.2mm diameter).")]
+    public float wireRadius = 0.0016f;
 
-    [Tooltip("Radius of the end spheres sitting on terminals in world meters.")]
-    public float endSphereRadius = 0.06f;
+    [Tooltip("Radius of the end spheres sitting on terminals in world meters (~2.5mm radius = 5mm diameter).")]
+    public float endSphereRadius = 0.0025f;
 
-    [Tooltip("Straight stub distance leaving terminals before the first 90-degree turn in meters (~2cm).")]
-    public float stub = 0.02f;
+    [Tooltip("Straight stub distance leaving terminals before the first 90-degree turn in meters (~1.2cm).")]
+    public float stub = 0.012f;
 
     // State
     private bool isConnected = false;
@@ -82,9 +82,9 @@ public class Wire : MonoBehaviour
     {
         wireMaterial = mat;
         wireColor = col;
-        wireRadius = Mathf.Max(radius, 0.035f);
-        endSphereRadius = Mathf.Max(endRadius, 0.05f);
-        stub = stubLen;
+        wireRadius = Mathf.Clamp(radius, 0.0008f, 0.006f);
+        endSphereRadius = Mathf.Clamp(endRadius, 0.0015f, 0.008f);
+        stub = Mathf.Clamp(stubLen, 0.005f, 0.03f);
 
         ApplyPropertyBlockToAll();
     }

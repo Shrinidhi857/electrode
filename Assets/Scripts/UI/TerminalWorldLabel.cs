@@ -12,7 +12,8 @@ namespace ContactorAR.UI
     /// </summary>
     public class TerminalWorldLabel : MonoBehaviour
     {
-        public const float WORLD_LABEL_SCALE = 0.00015f; // Compact AR readability scaled for real-world tabletop models
+        public const float WORLD_LABEL_SCALE = 0.00010f; // Ultra-compact AR readability so 18mm pole labels never overlap
+        public static bool GlobalLabelsEnabled = false; // Hidden by default for clean AR view
 
         [Header("Target Terminal")]
         [SerializeField] private TerminalPoint terminal;
@@ -69,12 +70,37 @@ namespace ContactorAR.UI
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
 
+            // Labels are only shown when explicitly enabled via bottom toolbar "Labels" toggle
+            bool shouldBeVisible = GlobalLabelsEnabled;
+
+            float distanceToCam = Vector3.Distance(transform.position, mainCamera.transform.position);
+            if (distanceToCam > 2.0f)
+            {
+                shouldBeVisible = false; // Distance culling beyond 2.0 meters
+            }
+
+            if (worldCanvas != null)
+            {
+                worldCanvas.enabled = shouldBeVisible;
+            }
+
+            if (!shouldBeVisible) return;
+
             // Billboard effect: Face AR camera
             transform.rotation = Quaternion.LookRotation(transform.position - mainCamera.transform.position);
 
+            // Dynamic distance scaling: keeps label small and crisp without overlapping neighbors
+            float distScale = Mathf.Clamp(distanceToCam * 0.75f, 0.4f, 1.2f);
+            if (worldCanvas != null)
+            {
+                worldCanvas.transform.localScale = Vector3.one * (WORLD_LABEL_SCALE * distScale);
+            }
+
             if (terminal != null)
             {
-                transform.position = terminal.SnapPosition + floatOffset;
+                // Stagger vertical height between even and odd poles so adjacent terminal labels never overlap
+                float staggerY = (terminal.PoleIndex % 2 == 1) ? 0.022f : 0.010f;
+                transform.position = terminal.SnapPosition + new Vector3(floatOffset.x, staggerY, floatOffset.z);
             }
         }
 
@@ -123,7 +149,7 @@ namespace ContactorAR.UI
             worldCanvas.renderMode = RenderMode.WorldSpace;
 
             RectTransform rect = worldCanvas.GetComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(100, 36);
+            rect.sizeDelta = new Vector2(72, 28);
             rect.localScale = Vector3.one * WORLD_LABEL_SCALE;
 
             // Background panel
@@ -132,34 +158,35 @@ namespace ContactorAR.UI
             backgroundPlate = bgObj.AddComponent<Image>();
             backgroundPlate.color = new Color(0.08f, 0.12f, 0.18f, 0.85f);
             RectTransform bgRect = bgObj.GetComponent<RectTransform>();
-            bgRect.sizeDelta = new Vector2(100, 36);
+            bgRect.sizeDelta = new Vector2(72, 28);
 
             // Title Text
             GameObject titleObj = new GameObject("TitleText");
             titleObj.transform.SetParent(bgObj.transform, false);
             titleText = titleObj.AddComponent<TextMeshProUGUI>();
-            titleText.fontSize = 13;
+            titleText.fontSize = 11;
             titleText.alignment = TextAlignmentOptions.Center;
             titleText.fontStyle = FontStyles.Bold;
             titleText.text = terminal != null ? terminal.TerminalLabel : "TERMINAL";
             RectTransform tRect = titleObj.GetComponent<RectTransform>();
-            tRect.sizeDelta = new Vector2(94, 16);
-            tRect.anchoredPosition = new Vector2(0, 8);
+            tRect.sizeDelta = new Vector2(68, 14);
+            tRect.anchoredPosition = new Vector2(0, 6);
 
             // Status Text
             GameObject statusObj = new GameObject("StatusText");
             statusObj.transform.SetParent(bgObj.transform, false);
             statusText = statusObj.AddComponent<TextMeshProUGUI>();
-            statusText.fontSize = 10;
+            statusText.fontSize = 9;
             statusText.alignment = TextAlignmentOptions.Center;
             statusText.text = "0V";
             RectTransform sRect = statusObj.GetComponent<RectTransform>();
-            sRect.sizeDelta = new Vector2(94, 14);
-            sRect.anchoredPosition = new Vector2(0, -8);
+            sRect.sizeDelta = new Vector2(68, 12);
+            sRect.anchoredPosition = new Vector2(0, -6);
         }
 
         public void SetVisible(bool visible)
         {
+            GlobalLabelsEnabled = visible;
             if (worldCanvas == null) worldCanvas = GetComponent<Canvas>();
             if (worldCanvas != null)
             {

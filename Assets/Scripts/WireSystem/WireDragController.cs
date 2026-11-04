@@ -25,14 +25,14 @@ public class WireDragController : MonoBehaviour
     [SerializeField] private float snapRadiusPx = 50f;
 
     [Header("Wire Geometry (Meters)")]
-    [Tooltip("Radius of the cylindrical wire in world meters (10-15x thicker than original 3mm -> 0.04m).")]
-    [SerializeField] private float wireRadius = 0.04f;
+    [Tooltip("Radius of the cylindrical wire in world meters (~1.6mm radius = 3.2mm diameter).")]
+    [SerializeField] private float wireRadius = 0.0016f;
 
-    [Tooltip("Radius of the end spheres in world meters.")]
-    [SerializeField] private float endSphereRadius = 0.06f;
+    [Tooltip("Radius of the end spheres in world meters (~2.5mm radius = 5mm diameter).")]
+    [SerializeField] private float endSphereRadius = 0.0025f;
 
-    [Tooltip("Length of the straight stub leaving each terminal in world meters (~0.02 = 2cm).")]
-    [SerializeField] private float stub = 0.02f;
+    [Tooltip("Length of the straight stub leaving each terminal in world meters (~1.2cm).")]
+    [SerializeField] private float stub = 0.012f;
 
     // Static flag exposed to AR manipulator/placement scripts to prevent conflicting gestures
     public static bool IsDragging { get; private set; } = false;
@@ -45,9 +45,10 @@ public class WireDragController : MonoBehaviour
 
     private void Awake()
     {
-        // Enforce 10-15x thicker wire: if serialized value was thin (< 0.02m), upgrade to 0.04m
-        if (wireRadius < 0.02f) wireRadius = 0.04f;
-        if (endSphereRadius < 0.03f) endSphereRadius = 0.06f;
+        // Enforce realistic electrical wiring dimensions (proportional to 5.8cm MCB / 4.5cm Contactor)
+        if (wireRadius > 0.01f || wireRadius < 0.0005f) wireRadius = 0.0016f;
+        if (endSphereRadius > 0.015f || endSphereRadius < 0.001f) endSphereRadius = 0.0025f;
+        if (stub > 0.05f || stub < 0.005f) stub = 0.012f;
     }
 
     private void Start()

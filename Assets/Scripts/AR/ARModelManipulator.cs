@@ -1,8 +1,14 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
+using Unity.XR.CoreUtils;
 using ContactorAR.Breaker;
 using ContactorAR.Wiring;
+using ContactorAR.SelectionSystem;
+using ContactorAR.UndoSystem;
+using ContactorAR.Interaction;
 
 namespace ContactorAR.AR
 {
@@ -14,13 +20,14 @@ namespace ContactorAR.AR
     }
 
     /// <summary>
-    /// Handles AR touch gestures and 3D positioning for contactor / breaker models:
+    /// Handles AR touch gestures, 3D positioning, and native AR anchoring for contactor / breaker models:
+    /// - Native AR Anchors: Uses ARAnchorManager to register physical anchors with ARCore/ARKit,
+    ///   parenting the model under the anchor so SLAM corrections eliminate real-world drift.
     /// - Centralized Selection: only the active selected model responds to gestures (no cross-model interference).
-    /// - 1-Finger Drag: moves the model horizontally (left/right) and vertically (up/down) in the camera's view plane.
-    /// - 2-Finger Rotate: rotates around the Y axis via twist angle OR horizontal two-finger swipe.
-    /// - 2-Finger Pinch: scales only the selected model.
-    /// - 2-Finger Vertical Drag: pushes/pulls the model in 3D depth (Z axis).
-    /// - Programmatic Rotate: RotateY(degrees) for quick 90° button rotations.
+    /// - 1-Finger Drag: moves the model horizontally along the world XZ plane at constant Y with 1:1 finger tracking.
+    /// - 2-Finger Rotate: rotates around the Y axis via twist angle (X and Z euler angles forced to 0).
+    /// - 2-Finger Pinch: scales only the selected model within calibrated min/max bounds.
+    /// - Tracking State: pauses updates and manages visibility when AR tracking state is limited/lost.
     /// </summary>
     [SelectionBase]
     public class ARModelManipulator : MonoBehaviour
@@ -28,7 +35,7 @@ namespace ContactorAR.AR
         [Header("Placement & Hanging")]
         [SerializeField] private PlacementMode placementMode = PlacementMode.FreeMovable;
 
-        [Tooltip("Specific world coordinate where the contactor is hung / pinned. Initialized to Vector3.zero so HangAtCoordinate() must be called explicitly — never drifts to a stale (0,0,1.2) default.")]
+        [Tooltip("Specific world coordinate where the contactor is hung / pinned.")]
         [SerializeField] private Vector3 hangingTargetCoordinate = Vector3.zero;
 
         [Tooltip("Target rotation when hung.")]
@@ -38,9 +45,9 @@ namespace ContactorAR.AR
         [SerializeField] private float hangingLerpSpeed = 8.0f;
 
         [Header("Pinch-to-Scale Settings")]
-        [Tooltip("Smallest allowed scale as a multiplier of the model's initial spawn scale (e.g. 0.2 = 20% of original size).")]
+        [Tooltip("Smallest allowed scale as a multiplier of the model's initial spawn scale.")]
         [SerializeField] private float minScaleFactor = 0.2f;
-        [Tooltip("Largest allowed scale as a multiplier of the model's initial spawn scale (e.g. 10 = 10x original size).")]
+        [Tooltip("Largest allowed scale as a multiplier of the model's initial spawn scale.")]
         [SerializeField] private float maxScaleFactor = 10.0f;
         [SerializeField] private float pinchSensitivity = 0.008f;
 
@@ -57,10 +64,12 @@ namespace ContactorAR.AR
 
         private Camera mainCamera;
         private Vector3 initialScale;
-        private float minScaleAbs;   // initialScale.magnitude * minScaleFactor
-        private float maxScaleAbs;   // initialScale.magnitude * maxScaleFactor
+        private float minScaleAbs;
+        private float maxScaleAbs;
         private bool isInteractingWithModel = false;
         private Vector2 lastScreenPos;
+        private Vector3 dragPlaneOffset = Vector3.zero;
+        private float dragInitialY = 0f;
 
         // Sub-elements being interacted with
         private MCBPivotLever activeLever;
@@ -69,10 +78,19 @@ namespace ContactorAR.AR
         // Touch tracking
         private float previousPinchDistance = 0f;
 
+        // Native AR Anchoring (AR Foundation 6)
+        private ARAnchor currentAnchor;
+        private ARAnchorManager anchorManager;
+        private ARPlaneManager planeManager;
+        private ARRaycastManager raycastManager;
+        private bool wasTracking = true;
+        private Renderer[] cachedRenderers;
+
         public PlacementMode Mode => placementMode;
         public Vector3 HangingCoordinate => hangingTargetCoordinate;
         public bool IsHanging => placementMode == PlacementMode.HangingAtCoordinates;
         public bool IsSelected => Selected == this;
+        public ARAnchor CurrentAnchor => currentAnchor;
 
         public event Action<PlacementMode> OnPlacementModeChanged;
         public event Action<Vector3> OnHangingCoordinateUpdated;
@@ -81,8 +99,6 @@ namespace ContactorAR.AR
         {
             mainCamera = Camera.main;
             initialScale = transform.localScale;
-            // Derive absolute min/max scale bounds from the model's actual spawn scale.
-            // This works correctly whether the model is 0.008 (MCB) or 0.8 (Contactor).
             float baseSize = Mathf.Max(initialScale.x, 0.0001f);
             minScaleAbs = baseSize * minScaleFactor;
             maxScaleAbs = baseSize * maxScaleFactor;
@@ -99,6 +115,7 @@ namespace ContactorAR.AR
 
         private void OnDisable()
         {
+            RemoveARAnchor();
             All.Remove(this);
             if (Selected == this)
             {
@@ -106,17 +123,41 @@ namespace ContactorAR.AR
             }
         }
 
+        private void OnDestroy()
+        {
+            RemoveARAnchor();
+            if (All.Contains(this)) All.Remove(this);
+            if (Selected == this) Select(null);
+        }
+
         private void Start()
         {
+            EnsureGlobalServices();
             EnsureCollider();
-            // Refresh scale bounds in Start() because Bootstrap (DefaultExecutionOrder=-100) may
-            // have changed localScale between Awake and Start. Capture the final intended spawn scale.
             RefreshScaleBounds();
+        }
+
+        private void EnsureGlobalServices()
+        {
+            if (SelectionManager.Instance == null)
+            {
+                GameObject sm = new GameObject("SelectionManager");
+                sm.AddComponent<SelectionManager>();
+            }
+            if (UndoService.Instance == null)
+            {
+                GameObject us = new GameObject("UndoService");
+                us.AddComponent<UndoService>();
+            }
+            if (ModelRotationController.Instance == null)
+            {
+                GameObject rc = new GameObject("ModelRotationController");
+                rc.AddComponent<ModelRotationController>();
+            }
         }
 
         /// <summary>
         /// Recalculates absolute min/max scale from current localScale and serialized scale factor fields.
-        /// Call any time localScale is externally set (e.g. by Bootstrap or ComponentSpawner).
         /// </summary>
         public void RefreshScaleBounds()
         {
@@ -137,18 +178,11 @@ namespace ContactorAR.AR
             Debug.Log($"[ARModelManipulator] Active selected model: {(Selected != null ? Selected.gameObject.name : "None")}");
         }
 
-        /// <summary>
-        /// Ensures the model has a valid BoxCollider in the correct local-space size.
-        /// The MCB model has localScale=0.008 so local collider units are 125x world-space —
-        /// a 1m local cube becomes 0.008m (8mm) world, which is correct for a 5.8cm model.
-        /// Minimum size enforces 0.01m world-space = 1.25 local at scale 0.008.
-        /// </summary>
         private void EnsureCollider()
         {
             BoxCollider bc = GetComponent<BoxCollider>();
             Renderer[] rends = GetComponentsInChildren<Renderer>();
 
-            // Compute a safe minimum: 0.01m world minimum in local space
             Vector3 lossy = transform.lossyScale;
             float minLocalX = Mathf.Max(0.01f / Mathf.Max(0.0001f, Mathf.Abs(lossy.x)), 0.1f);
             float minLocalY = Mathf.Max(0.01f / Mathf.Max(0.0001f, Mathf.Abs(lossy.y)), 0.1f);
@@ -180,7 +214,6 @@ namespace ContactorAR.AR
             }
             else
             {
-                // Ensure existing collider dimensions are strictly positive in local space
                 bc.size = new Vector3(
                     Mathf.Max(minLocalX, Mathf.Abs(bc.size.x)),
                     Mathf.Max(minLocalY, Mathf.Abs(bc.size.y)),
@@ -188,7 +221,6 @@ namespace ContactorAR.AR
                 );
             }
 
-            // Also ensure mesh colliders on child renderers (excluding UI/wires) for precise touch targeting
             foreach (Renderer r in rends)
             {
                 if (r.GetComponentInParent<Canvas>() != null) continue;
@@ -211,10 +243,21 @@ namespace ContactorAR.AR
             if (mainCamera == null) mainCamera = Camera.main;
             if (mainCamera == null) return;
 
-            // Check if user clicked/tapped to select a different model in the scene
+            // Handle native AR anchor tracking state changes (hides/resumes model during VIO tracking loss)
+            if (currentAnchor != null)
+            {
+                bool isTracking = currentAnchor.trackingState == TrackingState.Tracking;
+                if (wasTracking != isTracking)
+                {
+                    wasTracking = isTracking;
+                    SetRenderersVisible(isTracking);
+                }
+            }
+
+            // Check if user clicked/tapped to select a model or wire in the scene
             CheckTapSelection();
 
-            // CRITICAL: Only the currently SELECTED model executes gestures!
+            // Only the currently SELECTED model executes gestures
             if (Selected != this)
             {
                 return;
@@ -233,7 +276,7 @@ namespace ContactorAR.AR
                     transform.position = hangingTargetCoordinate;
                     transform.rotation = Quaternion.Euler(hangingTargetEuler);
                     placementMode = PlacementMode.Locked;
-                    ApplyARAnchor();
+                    AnchorAtCurrentPose();
                     OnPlacementModeChanged?.Invoke(placementMode);
                 }
                 return;
@@ -246,9 +289,6 @@ namespace ContactorAR.AR
 #endif
         }
 
-        /// <summary>
-        /// Checks if a touch or mouse click began on any model in the scene to switch selection.
-        /// </summary>
         private void CheckTapSelection()
         {
             Vector3 tapPos = Vector3.zero;
@@ -273,7 +313,6 @@ namespace ContactorAR.AR
 
             if (tapBegan && mainCamera != null)
             {
-                // Do not switch selection if tapped on UI
                 if (UnityEngine.EventSystems.EventSystem.current != null)
                 {
                     if (Input.touchCount > 0 && UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject(Input.GetTouch(0).fingerId))
@@ -286,13 +325,30 @@ namespace ContactorAR.AR
 
                 Ray ray = mainCamera.ScreenPointToRay(tapPos);
                 RaycastHit[] hits = Physics.RaycastAll(ray, 50f, interactableMask);
+
+                // Priority 1: Check if wire was tapped
+                foreach (var hit in hits)
+                {
+                    CylindricalWire wire = hit.collider.GetComponentInParent<CylindricalWire>();
+                    if (wire != null)
+                    {
+                        SelectionManager.Select(wire);
+                        return;
+                    }
+                }
+
+                // Priority 2: Check if model was tapped
                 foreach (var hit in hits)
                 {
                     ARModelManipulator hitManip = hit.collider.GetComponentInParent<ARModelManipulator>();
-                    if (hitManip != null && hitManip != Selected)
+                    if (hitManip != null)
                     {
-                        Select(hitManip);
-                        break;
+                        SelectionManager.Select(hitManip);
+                        if (hitManip != Selected)
+                        {
+                            Select(hitManip);
+                        }
+                        return;
                     }
                 }
             }
@@ -300,19 +356,16 @@ namespace ContactorAR.AR
 
         #region Coordinate Hanging & Locking API
         /// <summary>
-        /// Locks the breaker firmly in place at its current position with an ARAnchor.
+        /// Locks the breaker firmly in place at its current position with a native ARAnchor.
         /// </summary>
         public void LockCurrentPosition()
         {
             placementMode = PlacementMode.Locked;
-            ApplyARAnchor();
+            AnchorAtCurrentPose();
             OnPlacementModeChanged?.Invoke(placementMode);
-            Debug.Log($"[ARModelManipulator] {gameObject.name} locked at: {transform.position}");
+            Debug.Log($"[ARModelManipulator] {gameObject.name} locked and anchored at: {transform.position}");
         }
 
-        /// <summary>
-        /// Hangs the contactor at a specific world coordinate.
-        /// </summary>
         public void HangAtCoordinate(Vector3 targetWorldPosition, Quaternion? targetRotation = null)
         {
             RemoveARAnchor();
@@ -326,9 +379,6 @@ namespace ContactorAR.AR
             OnHangingCoordinateUpdated?.Invoke(hangingTargetCoordinate);
         }
 
-        /// <summary>
-        /// Hangs the contactor directly in front of the AR camera at calibrated eye-level (1-2 feet / ~0.50m).
-        /// </summary>
         public void HangAtCameraEyeLevel(float distance = ModelAssetLoader.SPAWN_DISTANCE, float heightOffset = 0.0f)
         {
             if (mainCamera == null) mainCamera = Camera.main;
@@ -345,9 +395,6 @@ namespace ContactorAR.AR
             HangAtCoordinate(hangPos, hangRot);
         }
 
-        /// <summary>
-        /// Releases the model so user can freely drag in XYZ, pinch-to-scale, and twist-to-rotate.
-        /// </summary>
         public void ReleaseToFreeMovable()
         {
             RemoveARAnchor();
@@ -356,9 +403,6 @@ namespace ContactorAR.AR
             Debug.Log($"[ARModelManipulator] {gameObject.name} released to FreeMovable mode.");
         }
 
-        /// <summary>
-        /// Toggles between Locked and Free movable.
-        /// </summary>
         public void ToggleMovable()
         {
             if (placementMode == PlacementMode.Locked || placementMode == PlacementMode.HangingAtCoordinates)
@@ -372,12 +416,28 @@ namespace ContactorAR.AR
         }
 
         /// <summary>
-        /// Rotates the model around the world Y axis by the given degrees.
+        /// Rotates the model around the world Y axis, locking X and Z to 0.
         /// </summary>
         public void RotateY(float degrees)
         {
             transform.Rotate(Vector3.up, degrees, Space.World);
-            Debug.Log($"[ARModelManipulator] Rotated {gameObject.name} by {degrees:F1}°");
+            Vector3 euler = transform.eulerAngles;
+            euler.x = 0f;
+            euler.z = 0f;
+            transform.eulerAngles = euler;
+            hangingTargetEuler = transform.eulerAngles;
+        }
+
+        private void LateUpdate()
+        {
+            // Lock X and Z rotation strictly to 0 every frame
+            Vector3 euler = transform.eulerAngles;
+            if (!Mathf.Approximately(euler.x, 0f) || !Mathf.Approximately(euler.z, 0f))
+            {
+                euler.x = 0f;
+                euler.z = 0f;
+                transform.eulerAngles = euler;
+            }
         }
         #endregion
 
@@ -392,7 +452,7 @@ namespace ContactorAR.AR
                 return;
             }
 
-            // 1-Finger Touch: Drag model horizontally (left/right) & vertically (up/down) in 3D camera view plane
+            // 1-Finger Touch: Drag model horizontally on world XZ plane at constant Y
             if (touchCount == 1)
             {
                 Touch touch = Input.GetTouch(0);
@@ -417,7 +477,7 @@ namespace ContactorAR.AR
                     EndAnyDrag();
                 }
             }
-            // 2-Finger Touch: Rotate, Pinch Scale, or Depth Move
+            // 2-Finger Touch: Rotate around Y, Pinch Scale, or Depth Move
             else if (touchCount == 2)
             {
                 if (isInteractingWithModel)
@@ -437,33 +497,31 @@ namespace ContactorAR.AR
                 {
                     float deltaPinch = currentPinchDist - previousPinchDistance;
 
-                    // 1. Twist angle (angular rotation)
                     Vector2 prevDir = (t0.position - t0.deltaPosition) - (t1.position - t1.deltaPosition);
                     Vector2 currentDir = t0.position - t1.position;
                     float twistAngle = Vector2.SignedAngle(prevDir, currentDir);
 
-                    // 2. Average delta horizontal & vertical across both fingers
                     float avgDeltaX = (t0.deltaPosition.x + t1.deltaPosition.x) * 0.5f;
                     float avgDeltaY = (t0.deltaPosition.y + t1.deltaPosition.y) * 0.5f;
-
                     bool sameDirectionY = (t0.deltaPosition.y * t1.deltaPosition.y > 0);
 
-                    // Rotation: trigger if fingers twist OR if both fingers swipe horizontally together
-                    if (Mathf.Abs(twistAngle) > 0.35f)
-                    {
-                        RotateY(-twistAngle * rotationSensitivity * 2.5f);
-                    }
-                    else if (Mathf.Abs(avgDeltaX) > 1.8f && Mathf.Abs(avgDeltaX) > Mathf.Abs(avgDeltaY) * 1.4f)
-                    {
-                        RotateY(-avgDeltaX * rotationSensitivity * 0.5f);
-                    }
-                    // Pinch-to-scale
-                    else if (Mathf.Abs(deltaPinch) > 2.5f)
+                    // Pinch-to-scale: Check delta distance between fingers
+                    if (Mathf.Abs(deltaPinch) > 3.0f)
                     {
                         ApplyPinchScale(deltaPinch * pinchSensitivity);
                     }
-                    // Depth (Z axis) movement: two fingers dragging vertically in parallel in the same direction
-                    else if (sameDirectionY && Mathf.Abs(avgDeltaY) > 4.0f && placementMode == PlacementMode.FreeMovable)
+
+                    // Rotation: trigger if fingers twist with intentional angle (>1.8°) OR swipe horizontally
+                    if (Mathf.Abs(twistAngle) > 1.8f)
+                    {
+                        RotateY(-twistAngle * rotationSensitivity * 1.5f);
+                    }
+                    else if (Mathf.Abs(avgDeltaX) > 3.0f && Mathf.Abs(avgDeltaX) > Mathf.Abs(avgDeltaY) * 1.5f && Mathf.Abs(deltaPinch) < 4.0f)
+                    {
+                        RotateY(-avgDeltaX * rotationSensitivity * 0.4f);
+                    }
+                    // Depth (Z axis) movement: two fingers dragging vertically in parallel
+                    else if (sameDirectionY && Mathf.Abs(avgDeltaY) > 5.0f && Mathf.Abs(deltaPinch) < 4.0f && placementMode == PlacementMode.FreeMovable)
                     {
                         transform.position += mainCamera.transform.forward * (avgDeltaY * 0.003f);
                     }
@@ -479,7 +537,6 @@ namespace ContactorAR.AR
         {
             Vector3 mousePos = Input.mousePosition;
 
-            // Scroll wheel for distance in Z (or scale with Ctrl held)
             float scroll = Input.GetAxis("Mouse ScrollWheel");
             if (Mathf.Abs(scroll) > 0.01f)
             {
@@ -493,14 +550,12 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Right click drag to rotate
             if (Input.GetMouseButton(1))
             {
                 float rotX = Input.GetAxis("Mouse X") * 4.0f;
                 RotateY(-rotX);
             }
 
-            // Left click interactions
             if (Input.GetMouseButtonDown(0))
             {
                 StartTouchInteraction(mousePos);
@@ -521,7 +576,6 @@ namespace ContactorAR.AR
         {
             lastScreenPos = screenPos;
 
-            // 1. Ignore interaction if touching over UI element
             if (UnityEngine.EventSystems.EventSystem.current != null)
             {
                 if (Input.touchCount > 0 && UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject(Input.GetTouch(0).fingerId))
@@ -532,11 +586,9 @@ namespace ContactorAR.AR
 #endif
             }
 
-            // 2. Perform raycast into scene for wire ends, levers, or other models
             Ray ray = mainCamera.ScreenPointToRay(screenPos);
             RaycastHit[] hits = Physics.RaycastAll(ray, 50f, interactableMask);
 
-            // Priority 1: Free (unconnected) wire connector ends
             WireConnectorEnd connectedWireEndHit = null;
             bool hitModelOrLever = false;
 
@@ -564,7 +616,6 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Priority 2: MCB pivot lever
             foreach (var hit in hits)
             {
                 MCBPivotLever lever = hit.collider.GetComponentInParent<MCBPivotLever>();
@@ -576,7 +627,6 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Priority 3: Check if another model was tapped to switch selection
             foreach (var hit in hits)
             {
                 ARModelManipulator otherManip = hit.collider.GetComponentInParent<ARModelManipulator>();
@@ -587,7 +637,6 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Priority 4: Connected wire end (only if specifically tapped and not touching model body)
             if (connectedWireEndHit != null && !hitModelOrLever)
             {
                 activeWireEnd = connectedWireEndHit;
@@ -595,10 +644,6 @@ namespace ContactorAR.AR
                 return;
             }
 
-            // Priority 5: 3D Movement of THIS selected model
-            // Start dragging if: (a) the touch actually hit this model's colliders, OR
-            // (b) the model is selected and the touch is close to model centre on-screen
-            // (handles cases where the BoxCollider is undersized after import)
             if (placementMode == PlacementMode.FreeMovable)
             {
                 bool hitThisModel = false;
@@ -612,7 +657,6 @@ namespace ContactorAR.AR
                     }
                 }
 
-                // Fallback: allow drag when tapping within 180px of the projected model centre
                 if (!hitThisModel && mainCamera != null)
                 {
                     Vector3 modelScreenPos = mainCamera.WorldToScreenPoint(transform.position);
@@ -626,7 +670,29 @@ namespace ContactorAR.AR
 
                 if (hitThisModel)
                 {
+                    if (placementMode != PlacementMode.FreeMovable)
+                    {
+                        ReleaseToFreeMovable();
+                    }
+                    RemoveARAnchor(); // Detach from anchor during drag
+
                     isInteractingWithModel = true;
+                    dragInitialY = transform.position.y;
+                    Plane horizontalPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
+
+                    if (horizontalPlane.Raycast(ray, out float enter) && enter > 0.05f && enter < 15.0f && Mathf.Abs(ray.direction.y) > 0.08f)
+                    {
+                        dragPlaneOffset = transform.position - ray.GetPoint(enter);
+                        dragPlaneOffset.y = 0f;
+                    }
+                    else
+                    {
+                        float dist = Vector3.Distance(mainCamera.transform.position, transform.position);
+                        Vector3 hitPt = ray.GetPoint(dist);
+                        hitPt.y = dragInitialY;
+                        dragPlaneOffset = transform.position - hitPt;
+                        dragPlaneOffset.y = 0f;
+                    }
                 }
             }
         }
@@ -652,23 +718,38 @@ namespace ContactorAR.AR
 
             if (isInteractingWithModel && placementMode == PlacementMode.FreeMovable)
             {
-                Vector2 deltaScreen = (Vector2)screenPos - lastScreenPos;
-                lastScreenPos = screenPos;
+                Ray ray = mainCamera.ScreenPointToRay(screenPos);
+                Plane horizontalPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
+                Vector3 worldHit;
 
-                if (deltaScreen.sqrMagnitude > 0.01f)
+                if (horizontalPlane.Raycast(ray, out float enter) && enter > 0.05f && enter < 15.0f && Mathf.Abs(ray.direction.y) > 0.08f)
                 {
-                    float distance = Mathf.Clamp(Vector3.Distance(mainCamera.transform.position, transform.position), 0.35f, 6.0f);
-                    float fovRad = mainCamera.fieldOfView * 0.5f * Mathf.Deg2Rad;
-                    float worldPerPixel = (2.0f * distance * Mathf.Tan(fovRad)) / Mathf.Max(100, Screen.height);
-
-                    // Translate along camera right (horizontal left/right) and camera up (vertical up/down)
-                    Vector3 moveDelta = (mainCamera.transform.right * deltaScreen.x + mainCamera.transform.up * deltaScreen.y) * worldPerPixel;
-                    transform.position += moveDelta;
-
-                    // Immediately keep hangingTargetCoordinate in sync with the new position
-                    hangingTargetCoordinate = transform.position;
-                    hangingTargetEuler = transform.eulerAngles;
+                    worldHit = ray.GetPoint(enter);
                 }
+                else
+                {
+                    float dist = Vector3.Distance(mainCamera.transform.position, transform.position);
+                    worldHit = ray.GetPoint(dist);
+                }
+
+                Vector3 newPos = worldHit + dragPlaneOffset;
+                newPos.y = dragInitialY; // Strictly constant horizontal plane Y
+
+                if (ModelDragController.SnapEnabled)
+                {
+                    float step = 0.018f;
+                    newPos.x = Mathf.Round(newPos.x / step) * step;
+                    newPos.z = Mathf.Round(newPos.z / step) * step;
+                }
+
+                transform.position = newPos;
+                hangingTargetCoordinate = transform.position;
+
+                Vector3 euler = transform.eulerAngles;
+                euler.x = 0f;
+                euler.z = 0f;
+                transform.eulerAngles = euler;
+                hangingTargetEuler = euler;
             }
             else
             {
@@ -693,10 +774,10 @@ namespace ContactorAR.AR
             if (isInteractingWithModel)
             {
                 isInteractingWithModel = false;
-                // Firmly lock the final position coordinates so it stays in place
                 hangingTargetCoordinate = transform.position;
                 hangingTargetEuler = transform.eulerAngles;
-                Debug.Log($"[ARModelManipulator] {gameObject.name} moved and locked at: {transform.position}");
+                AnchorAtCurrentPose();
+                Debug.Log($"[ARModelManipulator] {gameObject.name} moved and anchored at: {transform.position}");
             }
         }
 
@@ -704,32 +785,152 @@ namespace ContactorAR.AR
         {
             Vector3 current = transform.localScale;
             float factor = 1.0f + scaleDelta;
-            // Scale by factor but clamp to relative min/max — works for any initial scale (0.008 MCB or 0.8 Contactor)
             float newScaleX = Mathf.Clamp(current.x * factor, minScaleAbs, maxScaleAbs);
             if (Mathf.Approximately(current.x, 0f)) return;
             float ratio = newScaleX / current.x;
             transform.localScale = current * ratio;
         }
+        #endregion
 
-        private void ApplyARAnchor()
+        #region Native AR Anchor Lifecycle (Prevents Real-World Drift)
+        /// <summary>
+        /// Rigidly anchors this model to the real world using native ARAnchor (ARCore/ARKit).
+        /// If placed on a detected ARPlane, attaches to that plane's anchor via AttachAnchor.
+        /// Otherwise, registers a free-space anchor with the XRAnchorSubsystem via TryAddAnchorAsync.
+        /// The model is parented to the resulting ARAnchor so SLAM corrections keep it pinned to the real world.
+        /// </summary>
+        public async void AnchorAtCurrentPose()
         {
 #if !UNITY_EDITOR
-            if (GetComponent<UnityEngine.XR.ARFoundation.ARAnchor>() == null)
+            EnsureAnchorServices();
+
+            if (anchorManager == null || !anchorManager.enabled)
             {
-                gameObject.AddComponent<UnityEngine.XR.ARFoundation.ARAnchor>();
+                Debug.LogWarning($"[ARModelManipulator] Cannot anchor {gameObject.name}: ARAnchorManager not available.");
+                return;
             }
+
+            RemoveARAnchor();
+
+            Pose currentPose = new Pose(transform.position, transform.rotation);
+
+            // 1. Check if placed directly over or on a detected plane
+            ARPlane hitPlane = FindPlaneUnderModel(currentPose.position);
+            if (hitPlane != null)
+            {
+                try
+                {
+                    currentAnchor = anchorManager.AttachAnchor(hitPlane, currentPose);
+                    if (currentAnchor != null)
+                    {
+                        AttachToAnchor(currentAnchor);
+                        Debug.Log($"[ARModelManipulator] {gameObject.name} attached to plane anchor on {hitPlane.trackableId} at {currentPose.position}");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[ARModelManipulator] Plane AttachAnchor failed: {ex.Message}. Falling back to TryAddAnchorAsync.");
+                }
+            }
+
+            // 2. Free-space native anchor via XRAnchorSubsystem
+            try
+            {
+                var result = await anchorManager.TryAddAnchorAsync(currentPose);
+                if (result.status.IsSuccess() && result.value != null)
+                {
+                    currentAnchor = result.value;
+                    AttachToAnchor(currentAnchor);
+                    Debug.Log($"[ARModelManipulator] {gameObject.name} registered with native ARAnchor at {currentPose.position}");
+                }
+                else
+                {
+                    Debug.LogWarning($"[ARModelManipulator] TryAddAnchorAsync returned {result.status} for {gameObject.name}. Retaining world transform.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[ARModelManipulator] Exception creating native anchor: {ex.Message}");
+            }
+#else
+            Debug.Log($"[ARModelManipulator] (Editor Mode) Simulated anchor for {gameObject.name} at {transform.position}");
 #endif
         }
 
-        private void RemoveARAnchor()
+        private void AttachToAnchor(ARAnchor anchor)
         {
-#if !UNITY_EDITOR
-            var anchor = GetComponent<UnityEngine.XR.ARFoundation.ARAnchor>();
-            if (anchor != null)
+            if (anchor == null) return;
+            transform.SetParent(anchor.transform, true);
+        }
+
+        public void RemoveARAnchor()
+        {
+            if (currentAnchor != null)
             {
-                Destroy(anchor);
-            }
+                transform.SetParent(null, true);
+
+#if !UNITY_EDITOR
+                if (anchorManager != null && anchorManager.enabled)
+                {
+                    anchorManager.TryRemoveAnchor(currentAnchor);
+                }
+                else
+                {
+                    Destroy(currentAnchor.gameObject);
+                }
 #endif
+                currentAnchor = null;
+            }
+        }
+
+        private ARPlane FindPlaneUnderModel(Vector3 modelPos)
+        {
+            if (planeManager == null) planeManager = FindAnyObjectByType<ARPlaneManager>();
+            if (planeManager == null) return null;
+
+            Ray downRay = new Ray(modelPos + Vector3.up * 0.2f, Vector3.down);
+            List<ARRaycastHit> hits = new List<ARRaycastHit>();
+            if (raycastManager == null) raycastManager = FindAnyObjectByType<ARRaycastManager>();
+            if (raycastManager != null && raycastManager.Raycast(downRay, hits, TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds))
+            {
+                if (hits.Count > 0)
+                {
+                    return planeManager.GetPlane(hits[0].trackableId);
+                }
+            }
+
+            return null;
+        }
+
+        private void EnsureAnchorServices()
+        {
+            if (anchorManager == null) anchorManager = FindAnyObjectByType<ARAnchorManager>();
+            if (planeManager == null) planeManager = FindAnyObjectByType<ARPlaneManager>();
+            if (raycastManager == null) raycastManager = FindAnyObjectByType<ARRaycastManager>();
+
+            if (anchorManager == null)
+            {
+                XROrigin origin = FindAnyObjectByType<XROrigin>();
+                if (origin != null)
+                {
+                    anchorManager = origin.GetComponent<ARAnchorManager>() ?? origin.gameObject.AddComponent<ARAnchorManager>();
+                }
+            }
+        }
+
+        private void SetRenderersVisible(bool visible)
+        {
+            if (cachedRenderers == null || cachedRenderers.Length == 0)
+                cachedRenderers = GetComponentsInChildren<Renderer>(true);
+
+            for (int i = 0; i < cachedRenderers.Length; i++)
+            {
+                if (cachedRenderers[i] != null && cachedRenderers[i].GetComponentInParent<Canvas>() == null)
+                {
+                    cachedRenderers[i].enabled = visible;
+                }
+            }
         }
         #endregion
     }

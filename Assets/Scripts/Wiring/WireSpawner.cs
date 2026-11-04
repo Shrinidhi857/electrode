@@ -78,12 +78,12 @@ namespace ContactorAR.Wiring
             if (openTerminal != null)
             {
                 wire.EndA.SnapToTerminal(openTerminal);
-                // Position EndB slightly outward along pipeline exit direction ready to drag
-                wire.EndB.transform.position = openTerminal.SnapPosition + openTerminal.OutwardDirection * 0.12f + Vector3.forward * 0.05f;
+                // Position EndB slightly outward along pipeline exit direction ready to drag (~3.5cm)
+                wire.EndB.transform.position = openTerminal.SnapPosition + openTerminal.OutwardDirection * 0.035f + Vector3.forward * 0.015f;
             }
             else
             {
-                Vector3 spread = cam != null ? cam.transform.right * 0.12f : Vector3.right * 0.12f;
+                Vector3 spread = cam != null ? cam.transform.right * 0.04f : Vector3.right * 0.04f;
                 wire.EndA.transform.position = spawnOrigin - spread;
                 wire.EndB.transform.position = spawnOrigin + spread;
             }
@@ -93,6 +93,27 @@ namespace ContactorAR.Wiring
 
             Debug.Log($"[WireSpawner] Spawned new wire: {wireName} ({phase})");
             return wire;
+        }
+
+        /// <summary>
+        /// Removes and cleans up an individual wire.
+        /// </summary>
+        public void RemoveWire(CylindricalWire wire)
+        {
+            if (wire == null) return;
+            if (spawnedWires.Contains(wire))
+            {
+                spawnedWires.Remove(wire);
+            }
+            if (wire.EndA != null && wire.EndA.SnappedTerminal != null)
+            {
+                wire.EndA.SnappedTerminal.Disconnect();
+            }
+            if (wire.EndB != null && wire.EndB.SnappedTerminal != null)
+            {
+                wire.EndB.SnappedTerminal.Disconnect();
+            }
+            Destroy(wire.gameObject);
         }
 
         /// <summary>

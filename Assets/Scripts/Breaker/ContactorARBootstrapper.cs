@@ -171,12 +171,12 @@ namespace ContactorAR.Breaker
                 if (manip2 != null) manip2.RefreshScaleBounds();
             }
 
-            // 9. Start in FreeMovable mode so the user can drag the model into place.
-            //    The LOCK button in the UI will lock it once positioned.
+            // 9. Start in FreeMovable mode and register native anchor to prevent drift.
             if (arManip != null)
             {
                 arManip.ReleaseToFreeMovable();
-                log.AppendLine("[OK] Breaker started in FreeMovable mode — drag to position, then tap LOCK.");
+                arManip.AnchorAtCurrentPose();
+                log.AppendLine("[OK] Breaker started in FreeMovable mode with native AR anchor.");
             }
 
             log.AppendLine("=== Bootstrap Complete ===");

@@ -644,7 +644,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &173779101
 RectTransform:
   m_ObjectHideFlags: 0
@@ -2271,9 +2271,9 @@ MonoBehaviour:
   wireColor: {r: 0.92, g: 0.22, b: 0.22, a: 1}
   pickRadiusPx: 60
   snapRadiusPx: 50
-  wireRadius: 0.04
-  endSphereRadius: 0.06
-  stub: 0.02
+  wireRadius: 0.0016
+  endSphereRadius: 0.0025
+  stub: 0.012
 --- !u!1 &637151521 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 5963138107579739024, guid: 02644bbd28622410a84cf154fc436b8a, type: 3}
@@ -4125,7 +4125,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1024622694
 RectTransform:
   m_ObjectHideFlags: 0
