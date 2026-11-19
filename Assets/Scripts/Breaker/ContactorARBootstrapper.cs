@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using ContactorAR.Breaker;
 using ContactorAR.Wiring;
@@ -35,14 +36,18 @@ namespace ContactorAR.Breaker
             System.Text.StringBuilder log = new System.Text.StringBuilder();
             log.AppendLine("=== ContactorAR Bootstrap ===");
 
-            // Target breaker GameObject: either this GameObject or loaded from Assets if missing
-            GameObject breakerObj = gameObject;
+            // Target breaker GameObject: either this GameObject or existing in scene
+            GameObject breakerObj = null;
             bool isSelfBreaker = GetComponent<ContactorController>() != null || 
                                  GetComponent<MCBPivotLever>() != null || 
                                  gameObject.name.ToLower().Contains("mcb") || 
                                  gameObject.name.ToLower().Contains("breaker");
 
-            if (!isSelfBreaker)
+            if (isSelfBreaker)
+            {
+                breakerObj = gameObject;
+            }
+            else
             {
                 ContactorController existing = FindAnyObjectByType<ContactorController>();
                 if (existing != null)
@@ -52,77 +57,54 @@ namespace ContactorAR.Breaker
                 }
                 else
                 {
-                    // Load from Assets!
-                    breakerObj = ModelAssetLoader.EnsureMCBInScene();
-                    log.AppendLine($"[OK] Loaded MCB from Assets: {breakerObj.name}");
+                    // Clean startup mode: do NOT spawn any model automatically!
+                    // Camera view starts completely empty; models are imported on demand when user clicks sidebar buttons.
+                    log.AppendLine("[OK] Clean startup mode active: Camera view opens with no models pre-loaded. Models import on button click.");
                 }
             }
 
-            // 1. Ensure ContactorController
-            ContactorController contactor = breakerObj.GetComponent<ContactorController>();
-            if (contactor == null)
-            {
-                contactor = breakerObj.AddComponent<ContactorController>();
-                log.AppendLine("[OK] ContactorController added.");
-            }
-            else log.AppendLine("[OK] ContactorController found.");
+            // 1-5. If a breaker exists in scene, configure it
+            AR.ARModelManipulator arManip = null;
+            bool isContactor = false;
 
-            // 2. Ensure MCBPivotLever with 3_pole_mcb_final settings (-160° ON / -70° OFF on X axis)
-            MCBPivotLever lever = breakerObj.GetComponent<MCBPivotLever>();
-            if (lever == null)
+            if (breakerObj != null)
             {
-                lever = breakerObj.AddComponent<MCBPivotLever>();
-                log.AppendLine("[OK] MCBPivotLever added.");
-            }
-            else log.AppendLine("[OK] MCBPivotLever found.");
-
-            Transform pivotTrans = ModelAssetLoader.FindDeepChild(breakerObj.transform, "mcb_pivot");
-            if (pivotTrans != null)
-            {
-                lever.Configure(pivotTrans, ModelAssetLoader.MCB_ON_ANGLE, ModelAssetLoader.MCB_OFF_ANGLE, ModelAssetLoader.MCB_TRIP_ANGLE, RotationAxis.X);
-                log.AppendLine($"[OK] MCBPivotLever calibrated: ON={ModelAssetLoader.MCB_ON_ANGLE}°, OFF={ModelAssetLoader.MCB_OFF_ANGLE}°, TRIP={ModelAssetLoader.MCB_TRIP_ANGLE}° on X axis.");
-            }
-
-            // 3. Ensure AR Manipulator
-            AR.ARModelManipulator arManip = breakerObj.GetComponent<AR.ARModelManipulator>();
-            if (arManip == null)
-            {
-                arManip = breakerObj.AddComponent<AR.ARModelManipulator>();
-                log.AppendLine("[OK] ARModelManipulator added.");
-            }
-            else log.AppendLine("[OK] ARModelManipulator found.");
-
-            // 4. Configure terminals & actuator based on model type
-            bool isContactor = breakerObj.name.ToLower().Contains("contactor") || breakerObj.GetComponent<ContactorArmatureController>() != null;
-            if (isContactor)
-            {
-                ModelAssetLoader.ConfigureContactorInstance(breakerObj, applyDefaultScale: false); // scale applied in step 8
-                log.AppendLine($"[OK] Configured as Contactor: 12 terminals, CJX2S-090018 armature plunger (ON=0.0126, OFF=0.0069).");
-            }
-            else
-            {
-                ModelAssetLoader.ConfigureMCBInstance(breakerObj, applyDefaultScale: false);        // scale applied in step 8
-                contactor.AutoDiscoverTerminalsIfEmpty();
-                log.AppendLine($"[OK] Configured as MCB Breaker: 8 terminals (term_in_1..4, term_out_1..4), mcb_pivot.");
-            }
-
-            // Also check for any standalone contactor in the scene
-            ContactorArmatureController[] allContactors = FindObjectsByType<ContactorArmatureController>(FindObjectsSortMode.None);
-            foreach (var ct in allContactors)
-            {
-                if (ct.gameObject != breakerObj)
+                ContactorController contactor = breakerObj.GetComponent<ContactorController>();
+                if (contactor == null)
                 {
-                    ModelAssetLoader.ConfigureContactorInstance(ct.gameObject);
-                    log.AppendLine($"[OK] Configured additional contactor in scene: {ct.name}");
+                    contactor = breakerObj.AddComponent<ContactorController>();
+                    log.AppendLine("[OK] ContactorController added.");
                 }
-            }
 
-            // 5. Ensure ElectricalEffectsManager
-            Simulation.ElectricalEffectsManager effects = breakerObj.GetComponent<Simulation.ElectricalEffectsManager>();
-            if (effects == null)
-            {
-                effects = breakerObj.AddComponent<Simulation.ElectricalEffectsManager>();
-                log.AppendLine("[OK] ElectricalEffectsManager added.");
+                MCBPivotLever lever = breakerObj.GetComponent<MCBPivotLever>();
+                if (lever == null)
+                {
+                    lever = breakerObj.AddComponent<MCBPivotLever>();
+                    log.AppendLine("[OK] MCBPivotLever added.");
+                }
+
+                Transform pivotTrans = ModelAssetLoader.FindDeepChild(breakerObj.transform, "mcb_pivot");
+                if (pivotTrans != null)
+                {
+                    lever.Configure(pivotTrans, ModelAssetLoader.MCB_ON_ANGLE, ModelAssetLoader.MCB_OFF_ANGLE, ModelAssetLoader.MCB_TRIP_ANGLE, RotationAxis.X);
+                }
+
+                arManip = breakerObj.GetComponent<AR.ARModelManipulator>();
+                if (arManip == null) arManip = breakerObj.AddComponent<AR.ARModelManipulator>();
+
+                isContactor = breakerObj.name.ToLower().Contains("contactor") || breakerObj.GetComponent<ContactorArmatureController>() != null;
+                if (isContactor)
+                {
+                    ModelAssetLoader.ConfigureContactorInstance(breakerObj, applyDefaultScale: false);
+                }
+                else
+                {
+                    ModelAssetLoader.ConfigureMCBInstance(breakerObj, applyDefaultScale: false);
+                    contactor.AutoDiscoverTerminalsIfEmpty();
+                }
+
+                Simulation.ElectricalEffectsManager effects = breakerObj.GetComponent<Simulation.ElectricalEffectsManager>();
+                if (effects == null) breakerObj.AddComponent<Simulation.ElectricalEffectsManager>();
             }
 
             // 6. Validate global managers
@@ -137,46 +119,21 @@ namespace ContactorAR.Breaker
             }
             else log.AppendLine("[OK] PowerCircuitSimulator found.");
 
-            // 7. Validate distance from camera (keep model 1-2 feet / ~0.50m directly in front).
-            //    Only reposition if the model is clearly out-of-range (> 3m) — avoids fighting with
-            //    ARModelManipulator when the user has manually placed the model within a reasonable range.
-            Camera cam = Camera.main;
-            if (cam != null && breakerObj != null)
-            {
-                float dist = Vector3.Distance(breakerObj.transform.position, cam.transform.position);
-                bool tooFar   = dist > 3.0f;                              // clearly not in AR view
-                bool atOrigin = breakerObj.transform.position == Vector3.zero; // never been positioned
-                if (tooFar || atOrigin)
-                {
-                    Vector3 calibratedPos = cam.transform.position + cam.transform.forward * ModelAssetLoader.SPAWN_DISTANCE;
-                    breakerObj.transform.position = calibratedPos;
-                    breakerObj.transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
-                    log.AppendLine($"[CALIBRATED] Model repositioned to {ModelAssetLoader.SPAWN_DISTANCE:F2}m in front of camera (was {dist:F2}m away).");
-                }
-                else
-                {
-                    log.AppendLine($"[OK] Model already in valid range ({dist:F2}m from camera) — position preserved.");
-                }
-            }
-
-            // 8. Validate scale
+            // 7. Validate scale
             if (breakerObj != null)
             {
                 float targetScale = isContactor ? ModelAssetLoader.CONTACTOR_DEFAULT_SCALE : ModelAssetLoader.MCB_DEFAULT_SCALE;
                 breakerObj.transform.localScale = Vector3.one * targetScale;
                 log.AppendLine($"[OK] Scale calibrated: {breakerObj.transform.localScale}");
 
-                // Notify ARModelManipulator of the final scale so pinch-to-scale bounds are correct
                 AR.ARModelManipulator manip2 = breakerObj.GetComponent<AR.ARModelManipulator>();
                 if (manip2 != null) manip2.RefreshScaleBounds();
             }
 
-            // 9. Start in FreeMovable mode and register native anchor to prevent drift.
-            if (arManip != null)
+            // 8. Start intelligent AR tracking-aware placement & native plane anchoring (if model exists)
+            if (breakerObj != null)
             {
-                arManip.ReleaseToFreeMovable();
-                arManip.AnchorAtCurrentPose();
-                log.AppendLine("[OK] Breaker started in FreeMovable mode with native AR anchor.");
+                StartCoroutine(StartPlacementWhenARReady(breakerObj, arManip));
             }
 
             log.AppendLine("=== Bootstrap Complete ===");
@@ -187,6 +144,59 @@ namespace ContactorAR.Breaker
             if (debugLogText != null)
             {
                 debugLogText.text = logStr;
+            }
+        }
+
+        private System.Collections.IEnumerator StartPlacementWhenARReady(GameObject breakerObj, AR.ARModelManipulator arManip)
+        {
+#if !UNITY_EDITOR
+            // Wait until ARCore tracking is fully active before placing and anchoring
+            float timeout = 8.0f;
+            float elapsed = 0f;
+            while (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking && elapsed < timeout)
+            {
+                yield return new WaitForSeconds(0.2f);
+                elapsed += 0.2f;
+            }
+#endif
+            Camera cam = Camera.main;
+            if (cam == null || breakerObj == null) yield break;
+
+            UnityEngine.XR.ARFoundation.ARRaycastManager rayMgr = FindAnyObjectByType<UnityEngine.XR.ARFoundation.ARRaycastManager>();
+            List<UnityEngine.XR.ARFoundation.ARRaycastHit> hits = new List<UnityEngine.XR.ARFoundation.ARRaycastHit>();
+            bool placedOnSurface = false;
+
+            // Try to place on the first detected surface (table, desk, or wall/door)
+            if (rayMgr != null)
+            {
+                Ray fwdRay = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+                if (rayMgr.Raycast(fwdRay, hits, UnityEngine.XR.ARSubsystems.TrackableType.PlaneWithinPolygon | UnityEngine.XR.ARSubsystems.TrackableType.PlaneWithinBounds) && hits.Count > 0)
+                {
+                    breakerObj.transform.position = hits[0].pose.position;
+                    breakerObj.transform.rotation = Quaternion.LookRotation(-cam.transform.forward, Vector3.up);
+                    placedOnSurface = true;
+                    Debug.Log($"[ContactorARBootstrapper] Placed breaker on detected AR surface at {hits[0].pose.position}");
+                }
+            }
+
+            if (!placedOnSurface)
+            {
+                // Fallback to comfortable 0.70m in front of camera at eye level
+                Vector3 camFwd = cam.transform.forward;
+                camFwd.y = 0;
+                if (camFwd.sqrMagnitude < 0.01f) camFwd = cam.transform.forward;
+                camFwd.Normalize();
+
+                Vector3 targetPos = cam.transform.position + camFwd * 0.70f;
+                breakerObj.transform.position = targetPos;
+                breakerObj.transform.rotation = Quaternion.LookRotation(-camFwd, Vector3.up);
+            }
+
+            if (arManip != null)
+            {
+                arManip.ReleaseToFreeMovable();
+                arManip.AnchorAtCurrentPose();
+                Debug.Log($"[ContactorARBootstrapper] Breaker anchored firmly with native ARAnchor.");
             }
         }
     }

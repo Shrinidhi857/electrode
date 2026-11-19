@@ -55,6 +55,10 @@ namespace ContactorAR.AR
 
         private void Awake()
         {
+            // Lock target frame rate to 60 FPS to synchronize perfectly with ARCore camera sensor feed
+            Application.targetFrameRate = 60;
+            Screen.sleepTimeout = SleepTimeout.NeverSleep;
+
             DisableLegacyUI();
             EnsureARAnchorManager();
             EnsureARContactorCanvas();

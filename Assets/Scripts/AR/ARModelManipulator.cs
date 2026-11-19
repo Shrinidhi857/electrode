@@ -78,6 +78,10 @@ namespace ContactorAR.AR
         // Touch tracking
         private float previousPinchDistance = 0f;
 
+        // ── Selection highlight (scale pulse when selected) ──────────
+        private Coroutine selectionPulseCo;
+        private bool isPulseActive = false;
+
         // Native AR Anchoring (AR Foundation 6)
         private ARAnchor currentAnchor;
         private ARAnchorManager anchorManager;
@@ -173,9 +177,60 @@ namespace ContactorAR.AR
         public static void Select(ARModelManipulator target)
         {
             if (Selected == target) return;
+
+            // Stop pulse on previously selected model
+            if (Selected != null) Selected.StopSelectionPulse();
+
             Selected = target;
             OnSelectionChanged?.Invoke(Selected);
+
+            // Start selection pulse on newly selected model
+            if (Selected != null) Selected.StartSelectionPulse();
+
             Debug.Log($"[ARModelManipulator] Active selected model: {(Selected != null ? Selected.gameObject.name : "None")}");
+        }
+
+        // ── Selection Highlight: quick scale pulse when selected ─────
+        private void StartSelectionPulse()
+        {
+            if (selectionPulseCo != null) StopCoroutine(selectionPulseCo);
+            selectionPulseCo = StartCoroutine(SelectionPulseRoutine());
+        }
+
+        private void StopSelectionPulse()
+        {
+            if (selectionPulseCo != null) { StopCoroutine(selectionPulseCo); selectionPulseCo = null; }
+            isPulseActive = false;
+            // Restore exact scale (avoid drift from interrupted lerp)
+            transform.localScale = initialScale != Vector3.zero ? initialScale : transform.localScale;
+        }
+
+        private System.Collections.IEnumerator SelectionPulseRoutine()
+        {
+            isPulseActive = true;
+            Vector3 baseScale = transform.localScale;
+            Vector3 bigScale  = baseScale * 1.08f;   // 8% pop-up
+            float dur = 0.18f;
+
+            // Scale up
+            float t = 0f;
+            while (t < dur)
+            {
+                t += Time.unscaledDeltaTime;
+                transform.localScale = Vector3.Lerp(baseScale, bigScale, t / dur);
+                yield return null;
+            }
+            // Scale back
+            t = 0f;
+            while (t < dur)
+            {
+                t += Time.unscaledDeltaTime;
+                transform.localScale = Vector3.Lerp(bigScale, baseScale, t / dur);
+                yield return null;
+            }
+            transform.localScale = baseScale;
+            isPulseActive = false;
+            selectionPulseCo = null;
         }
 
         private void EnsureCollider()
@@ -452,32 +507,28 @@ namespace ContactorAR.AR
                 return;
             }
 
-            // 1-Finger Touch: Drag model horizontally on world XZ plane at constant Y
+            // 1-Finger Touch: SELECT only — no accidental drag
+            // Model moves only when explicitly in 2-finger pan mode (see below).
             if (touchCount == 1)
             {
                 Touch touch = Input.GetTouch(0);
 
+                // Lever and wire interactions still work with 1 finger
                 if (touch.phase == TouchPhase.Began)
                 {
-                    StartTouchInteraction(touch.position);
+                    StartTouchInteraction(touch.position, selectOnly: true);
                 }
                 else if (touch.phase == TouchPhase.Moved || touch.phase == TouchPhase.Stationary)
                 {
-                    if (isInteractingWithModel || activeWireEnd != null || activeLever != null)
-                    {
+                    if (activeWireEnd != null || activeLever != null)
                         UpdateTouchInteraction(touch.position);
-                    }
-                    else
-                    {
-                        StartTouchInteraction(touch.position);
-                    }
                 }
                 else if (touch.phase == TouchPhase.Ended || touch.phase == TouchPhase.Canceled)
                 {
                     EndAnyDrag();
                 }
             }
-            // 2-Finger Touch: Rotate around Y, Pinch Scale, or Depth Move
+            // 2-Finger Touch: Rotate, Pinch-Scale, or PAN (move) the model
             else if (touchCount == 2)
             {
                 if (isInteractingWithModel)
@@ -492,6 +543,9 @@ namespace ContactorAR.AR
                 if (t0.phase == TouchPhase.Began || t1.phase == TouchPhase.Began)
                 {
                     previousPinchDistance = currentPinchDist;
+                    // Begin 2-finger pan drag (like a 1-finger drag but gated to 2 fingers)
+                    if (placementMode == PlacementMode.FreeMovable)
+                        Begin2FingerPan(t0.position, t1.position);
                 }
                 else if (t0.phase == TouchPhase.Moved || t1.phase == TouchPhase.Moved)
                 {
@@ -504,31 +558,122 @@ namespace ContactorAR.AR
                     float avgDeltaX = (t0.deltaPosition.x + t1.deltaPosition.x) * 0.5f;
                     float avgDeltaY = (t0.deltaPosition.y + t1.deltaPosition.y) * 0.5f;
                     bool sameDirectionY = (t0.deltaPosition.y * t1.deltaPosition.y > 0);
+                    bool sameDirectionX = (t0.deltaPosition.x * t1.deltaPosition.x > 0);
 
-                    // Pinch-to-scale: Check delta distance between fingers
+                    // Priority 1: Pinch-to-scale (fingers moving apart/together clearly)
                     if (Mathf.Abs(deltaPinch) > 3.0f)
                     {
                         ApplyPinchScale(deltaPinch * pinchSensitivity);
                     }
 
-                    // Rotation: trigger if fingers twist with intentional angle (>1.8°) OR swipe horizontally
+                    // Priority 2: Rotation (finger twist > 1.8°)
                     if (Mathf.Abs(twistAngle) > 1.8f)
                     {
                         RotateY(-twistAngle * rotationSensitivity * 1.5f);
                     }
-                    else if (Mathf.Abs(avgDeltaX) > 3.0f && Mathf.Abs(avgDeltaX) > Mathf.Abs(avgDeltaY) * 1.5f && Mathf.Abs(deltaPinch) < 4.0f)
+                    else if (Mathf.Abs(avgDeltaX) > 3.0f && Mathf.Abs(avgDeltaX) > Mathf.Abs(avgDeltaY) * 1.5f && Mathf.Abs(deltaPinch) < 4.0f && sameDirectionX)
                     {
                         RotateY(-avgDeltaX * rotationSensitivity * 0.4f);
                     }
-                    // Depth (Z axis) movement: two fingers dragging vertically in parallel
-                    else if (sameDirectionY && Mathf.Abs(avgDeltaY) > 5.0f && Mathf.Abs(deltaPinch) < 4.0f && placementMode == PlacementMode.FreeMovable)
+                    // Priority 3: 2-finger parallel PAN — both fingers moving same direction (move model)
+                    else if (Mathf.Abs(deltaPinch) < 6.0f && placementMode == PlacementMode.FreeMovable)
+                    {
+                        // Both fingers same direction = translate the model on the XZ plane
+                        if ((sameDirectionX || sameDirectionY) && (Mathf.Abs(avgDeltaX) > 2.0f || Mathf.Abs(avgDeltaY) > 2.0f))
+                        {
+                            Vector2 midScreen = (t0.position + t1.position) * 0.5f;
+                            Update2FingerPan(midScreen);
+                        }
+                    }
+
+                    // Depth (Z) push: both fingers move up/down in parallel with no pinch
+                    if (sameDirectionY && Mathf.Abs(avgDeltaY) > 5.0f && Mathf.Abs(deltaPinch) < 4.0f && !sameDirectionX)
                     {
                         transform.position += mainCamera.transform.forward * (avgDeltaY * 0.003f);
                     }
 
                     previousPinchDistance = currentPinchDist;
                 }
+                else if (t0.phase == TouchPhase.Ended || t1.phase == TouchPhase.Ended)
+                {
+                    EndAnyDrag(); // Re-anchor after 2-finger pan ends
+                }
             }
+        }
+
+        // ── 2-Finger Pan helpers ─────────────────────────────────────
+        private Vector2 panMidScreenPrev;
+        private bool panActive = false;
+        private Vector3 panPlaneOffset = Vector3.zero;
+
+        private void Begin2FingerPan(Vector2 p0, Vector2 p1)
+        {
+            panMidScreenPrev = (p0 + p1) * 0.5f;
+            panActive = true;
+            dragInitialY = transform.position.y;
+
+            if (mainCamera != null)
+            {
+                Ray ray = mainCamera.ScreenPointToRay(panMidScreenPrev);
+                Plane hPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
+                if (hPlane.Raycast(ray, out float enter) && enter > 0.05f)
+                {
+                    panPlaneOffset = transform.position - ray.GetPoint(enter);
+                    panPlaneOffset.y = 0f;
+                }
+                else
+                {
+                    panPlaneOffset = Vector3.zero;
+                }
+            }
+
+            // Detach anchor during move so we don't fight SLAM
+            RemoveARAnchor();
+            isInteractingWithModel = true;
+        }
+
+        private void Update2FingerPan(Vector2 midScreen)
+        {
+            if (!panActive || mainCamera == null) return;
+
+            Ray ray = mainCamera.ScreenPointToRay(midScreen);
+            Vector3 newPos;
+
+            // Try AR plane first, then fall back to horizontal plane at model's Y
+            List<ARRaycastHit> planeHits = new List<ARRaycastHit>();
+            if (raycastManager != null && raycastManager.Raycast(ray, planeHits, TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds) && planeHits.Count > 0)
+            {
+                newPos = planeHits[0].pose.position + panPlaneOffset;
+                dragInitialY = newPos.y;
+            }
+            else
+            {
+                Plane hPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
+                if (hPlane.Raycast(ray, out float enter) && enter > 0.05f && enter < 15f)
+                {
+                    newPos = ray.GetPoint(enter) + panPlaneOffset;
+                }
+                else
+                {
+                    Vector2 screenDelta = midScreen - panMidScreenPrev;
+                    Vector3 camRight = mainCamera.transform.right;
+                    Vector3 camFwd = Vector3.ProjectOnPlane(mainCamera.transform.forward, Vector3.up).normalized;
+                    newPos = transform.position + (camRight * screenDelta.x + camFwd * screenDelta.y) * 0.002f;
+                }
+            }
+
+            newPos.y = dragInitialY;
+
+            if (ModelDragController.SnapEnabled)
+            {
+                float step = 0.018f;
+                newPos.x = Mathf.Round(newPos.x / step) * step;
+                newPos.z = Mathf.Round(newPos.z / step) * step;
+            }
+
+            transform.position = newPos;
+            hangingTargetCoordinate = transform.position;
+            panMidScreenPrev = midScreen;
         }
         #endregion
 
@@ -556,13 +701,29 @@ namespace ContactorAR.AR
                 RotateY(-rotX);
             }
 
-            if (Input.GetMouseButtonDown(0))
+            // Mouse pan: Middle-click or Shift+Left-drag moves model on XZ plane
+            if (Input.GetMouseButtonDown(2) || (Input.GetKey(KeyCode.LeftShift) && Input.GetMouseButtonDown(0)))
             {
-                StartTouchInteraction(mousePos);
+                if (placementMode == PlacementMode.FreeMovable)
+                    Begin2FingerPan(mousePos, mousePos);
+            }
+            else if (Input.GetMouseButton(2) || (Input.GetKey(KeyCode.LeftShift) && Input.GetMouseButton(0)))
+            {
+                if (placementMode == PlacementMode.FreeMovable && panActive)
+                    Update2FingerPan(mousePos);
+            }
+            else if (Input.GetMouseButtonUp(2) || (Input.GetKey(KeyCode.LeftShift) && Input.GetMouseButtonUp(0)))
+            {
+                EndAnyDrag();
+            }
+            else if (Input.GetMouseButtonDown(0))
+            {
+                StartTouchInteraction(mousePos, selectOnly: true);
             }
             else if (Input.GetMouseButton(0))
             {
-                UpdateTouchInteraction(mousePos);
+                if (activeWireEnd != null || activeLever != null)
+                    UpdateTouchInteraction(mousePos);
             }
             else if (Input.GetMouseButtonUp(0))
             {
@@ -572,7 +733,7 @@ namespace ContactorAR.AR
         #endregion
 
         #region Interaction Resolution
-        private void StartTouchInteraction(Vector3 screenPos)
+        private void StartTouchInteraction(Vector3 screenPos, bool selectOnly = false)
         {
             lastScreenPos = screenPos;
 
@@ -597,7 +758,7 @@ namespace ContactorAR.AR
                 WireConnectorEnd wireEnd = hit.collider.GetComponent<WireConnectorEnd>();
                 if (wireEnd != null)
                 {
-                    if (!wireEnd.IsConnected)
+                    if (!wireEnd.IsConnected && !selectOnly)
                     {
                         activeWireEnd = wireEnd;
                         activeWireEnd.StartDragging(screenPos);
@@ -670,6 +831,13 @@ namespace ContactorAR.AR
 
                 if (hitThisModel)
                 {
+                    // 1-finger touch on model selects it without dragging
+                    if (selectOnly)
+                    {
+                        Select(this);
+                        return;
+                    }
+
                     if (placementMode != PlacementMode.FreeMovable)
                     {
                         ReleaseToFreeMovable();
@@ -719,21 +887,30 @@ namespace ContactorAR.AR
             if (isInteractingWithModel && placementMode == PlacementMode.FreeMovable)
             {
                 Ray ray = mainCamera.ScreenPointToRay(screenPos);
-                Plane horizontalPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
-                Vector3 worldHit;
+                Vector3 newPos;
 
-                if (horizontalPlane.Raycast(ray, out float enter) && enter > 0.05f && enter < 15.0f && Mathf.Abs(ray.direction.y) > 0.08f)
+                // Priority 1: Direct AR plane surface tracking (wall, door, table, desk)
+                List<ARRaycastHit> planeHits = new List<ARRaycastHit>();
+                if (raycastManager != null && raycastManager.Raycast(ray, planeHits, TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds) && planeHits.Count > 0)
                 {
-                    worldHit = ray.GetPoint(enter);
+                    newPos = planeHits[0].pose.position;
+                    dragInitialY = newPos.y;
                 }
                 else
                 {
-                    float dist = Vector3.Distance(mainCamera.transform.position, transform.position);
-                    worldHit = ray.GetPoint(dist);
+                    // Fallback: horizontal plane raycast
+                    Plane horizontalPlane = new Plane(Vector3.up, new Vector3(0f, dragInitialY, 0f));
+                    if (horizontalPlane.Raycast(ray, out float enter) && enter > 0.05f && enter < 15.0f && Mathf.Abs(ray.direction.y) > 0.08f)
+                    {
+                        newPos = ray.GetPoint(enter) + dragPlaneOffset;
+                    }
+                    else
+                    {
+                        float dist = Vector3.Distance(mainCamera.transform.position, transform.position);
+                        newPos = ray.GetPoint(dist) + dragPlaneOffset;
+                    }
+                    newPos.y = dragInitialY;
                 }
-
-                Vector3 newPos = worldHit + dragPlaneOffset;
-                newPos.y = dragInitialY; // Strictly constant horizontal plane Y
 
                 if (ModelDragController.SnapEnabled)
                 {
@@ -771,9 +948,10 @@ namespace ContactorAR.AR
                 activeLever = null;
             }
 
-            if (isInteractingWithModel)
+            if (isInteractingWithModel || panActive)
             {
                 isInteractingWithModel = false;
+                panActive = false;
                 hangingTargetCoordinate = transform.position;
                 hangingTargetEuler = transform.eulerAngles;
                 AnchorAtCurrentPose();
@@ -793,9 +971,13 @@ namespace ContactorAR.AR
         #endregion
 
         #region Native AR Anchor Lifecycle (Prevents Real-World Drift)
+        private Coroutine anchorWaitCo;
+
         /// <summary>
         /// Rigidly anchors this model to the real world using native ARAnchor (ARCore/ARKit).
-        /// If placed on a detected ARPlane, attaches to that plane's anchor via AttachAnchor.
+        /// If ARSession is not tracking yet, automatically awaits tracking establishing before attaching.
+        /// Searches for detected planes across all surface angles (horizontal tables/floors AND vertical walls/doors).
+        /// If placed on or near a detected ARPlane, attaches to that plane's anchor via AttachAnchor.
         /// Otherwise, registers a free-space anchor with the XRAnchorSubsystem via TryAddAnchorAsync.
         /// The model is parented to the resulting ARAnchor so SLAM corrections keep it pinned to the real world.
         /// </summary>
@@ -803,6 +985,15 @@ namespace ContactorAR.AR
         {
 #if !UNITY_EDITOR
             EnsureAnchorServices();
+
+            // Guard: If ARSession is not actively tracking, queue anchoring until tracking begins
+            if (ARSession.state != ARSessionState.SessionTracking)
+            {
+                Debug.Log($"[ARModelManipulator] ARSession is {ARSession.state}. Queuing anchor for {gameObject.name} once tracking establishes.");
+                if (anchorWaitCo != null) StopCoroutine(anchorWaitCo);
+                anchorWaitCo = StartCoroutine(WaitForTrackingAndAnchor());
+                return;
+            }
 
             if (anchorManager == null || !anchorManager.enabled)
             {
@@ -814,8 +1005,8 @@ namespace ContactorAR.AR
 
             Pose currentPose = new Pose(transform.position, transform.rotation);
 
-            // 1. Check if placed directly over or on a detected plane
-            ARPlane hitPlane = FindPlaneUnderModel(currentPose.position);
+            // 1. Check if placed directly on or near a detected plane (horizontal OR vertical wall/door)
+            ARPlane hitPlane = FindPlaneNearModel(currentPose.position);
             if (hitPlane != null)
             {
                 try
@@ -824,7 +1015,7 @@ namespace ContactorAR.AR
                     if (currentAnchor != null)
                     {
                         AttachToAnchor(currentAnchor);
-                        Debug.Log($"[ARModelManipulator] {gameObject.name} attached to plane anchor on {hitPlane.trackableId} at {currentPose.position}");
+                        Debug.Log($"[ARModelManipulator] {gameObject.name} attached to plane anchor on {hitPlane.trackableId} ({hitPlane.alignment}) at {currentPose.position}");
                         return;
                     }
                 }
@@ -858,6 +1049,23 @@ namespace ContactorAR.AR
 #endif
         }
 
+        private System.Collections.IEnumerator WaitForTrackingAndAnchor()
+        {
+            float timeout = 10f;
+            float elapsed = 0f;
+            while (ARSession.state != ARSessionState.SessionTracking && elapsed < timeout)
+            {
+                yield return new WaitForSeconds(0.25f);
+                elapsed += 0.25f;
+            }
+
+            anchorWaitCo = null;
+            if (ARSession.state == ARSessionState.SessionTracking)
+            {
+                AnchorAtCurrentPose();
+            }
+        }
+
         private void AttachToAnchor(ARAnchor anchor)
         {
             if (anchor == null) return;
@@ -884,23 +1092,65 @@ namespace ContactorAR.AR
             }
         }
 
-        private ARPlane FindPlaneUnderModel(Vector3 modelPos)
+        /// <summary>
+        /// Multi-axis surface detector that finds the best matching ARPlane under or behind the model.
+        /// Raycasts from the camera, downwards, and forward to hit horizontal floors/tables AND vertical walls/doors.
+        /// </summary>
+        private ARPlane FindPlaneNearModel(Vector3 modelPos)
         {
             if (planeManager == null) planeManager = FindAnyObjectByType<ARPlaneManager>();
             if (planeManager == null) return null;
-
-            Ray downRay = new Ray(modelPos + Vector3.up * 0.2f, Vector3.down);
-            List<ARRaycastHit> hits = new List<ARRaycastHit>();
             if (raycastManager == null) raycastManager = FindAnyObjectByType<ARRaycastManager>();
-            if (raycastManager != null && raycastManager.Raycast(downRay, hits, TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds))
+            if (raycastManager == null) return null;
+
+            List<ARRaycastHit> hits = new List<ARRaycastHit>();
+            TrackableType planeFilter = TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds;
+
+            // 1. Ray from camera towards model (best for both horizontal floors and vertical walls/doors)
+            if (mainCamera != null)
             {
-                if (hits.Count > 0)
+                Vector3 camToModel = (modelPos - mainCamera.transform.position).normalized;
+                Ray camRay = new Ray(mainCamera.transform.position, camToModel);
+                if (raycastManager.Raycast(camRay, hits, planeFilter) && hits.Count > 0)
                 {
                     return planeManager.GetPlane(hits[0].trackableId);
                 }
             }
 
-            return null;
+            // 2. Downward ray (for horizontal tables, desks, floors)
+            Ray downRay = new Ray(modelPos + Vector3.up * 0.3f, Vector3.down);
+            if (raycastManager.Raycast(downRay, hits, planeFilter) && hits.Count > 0)
+            {
+                return planeManager.GetPlane(hits[0].trackableId);
+            }
+
+            // 3. Forward ray into surface behind model (for vertical walls, switchboards, doors)
+            if (mainCamera != null)
+            {
+                Ray fwdRay = new Ray(modelPos - mainCamera.transform.forward * 0.2f, mainCamera.transform.forward);
+                if (raycastManager.Raycast(fwdRay, hits, planeFilter) && hits.Count > 0)
+                {
+                    return planeManager.GetPlane(hits[0].trackableId);
+                }
+            }
+
+            // 4. Proximity check against all tracked AR planes within 0.4m
+            ARPlane closestPlane = null;
+            float closestDist = 0.40f;
+            foreach (var plane in planeManager.trackables)
+            {
+                if (plane.trackingState == TrackingState.Tracking)
+                {
+                    float dist = Vector3.Distance(modelPos, plane.center);
+                    if (dist < closestDist)
+                    {
+                        closestDist = dist;
+                        closestPlane = plane;
+                    }
+                }
+            }
+
+            return closestPlane;
         }
 
         private void EnsureAnchorServices()

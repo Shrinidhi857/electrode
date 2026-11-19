@@ -240,24 +240,10 @@ namespace ContactorAR.AR
             OnModelPlaced?.Invoke(worldPosition, worldRotation);
             Debug.Log($"[ARPlacementManager] Contactor placed at: {worldPosition}");
 
-            // Create AR Anchor at placement surface if AR Anchor Manager available
-            if (arAnchorManager != null && arPlaneManager != null && hitResults.Count > 0)
+            // Anchor model using native ARAnchorManager via ARModelManipulator
+            if (spawnedManipulator != null)
             {
-                ARRaycastHit firstHit = hitResults[0];
-                // Use ARPlaneManager to look up the plane from the trackable ID
-                ARPlane plane = arPlaneManager.GetPlane(firstHit.trackableId);
-                if (plane != null)
-                {
-                    // Modern AR Foundation anchor creation: add ARAnchor component at pose
-                    GameObject anchorObj = new GameObject("ContactorAnchor");
-                    anchorObj.transform.SetPositionAndRotation(firstHit.pose.position, firstHit.pose.rotation);
-                    ARAnchor anchor = anchorObj.AddComponent<ARAnchor>();
-                    if (anchor != null)
-                    {
-                        currentAnchor = anchor;
-                        instance.transform.SetParent(anchor.transform, true);
-                    }
-                }
+                spawnedManipulator.AnchorAtCurrentPose();
             }
         }
 

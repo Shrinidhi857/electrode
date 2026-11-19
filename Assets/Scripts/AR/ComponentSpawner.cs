@@ -263,7 +263,7 @@ namespace ContactorAR.AR
         {
             if (mainCam == null) mainCam = Camera.main;
 
-            // If we already have models live in the scene, place the new one side-by-side to the right (9cm DIN rail spacing)
+            // Priority 1: If we already have models live in the scene, place the new one side-by-side to the right (9cm DIN rail spacing)
             if (liveModels.Count > 0 && liveModels[liveModels.Count - 1].GameObject != null)
             {
                 Transform refTrans = liveModels[liveModels.Count - 1].GameObject.transform;
@@ -275,11 +275,29 @@ namespace ContactorAR.AR
                 }
             }
 
-            // Default: 1-2 feet (0.50m) directly in front of camera
+            // Priority 2: Try forward raycast against detected AR surfaces (table, desk, or wall/door)
             if (mainCam != null)
-                return mainCam.transform.position + mainCam.transform.forward * spawnDistance;
+            {
+                UnityEngine.XR.ARFoundation.ARRaycastManager rayMgr = FindAnyObjectByType<UnityEngine.XR.ARFoundation.ARRaycastManager>();
+                if (rayMgr != null)
+                {
+                    Ray fwdRay = mainCam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+                    List<UnityEngine.XR.ARFoundation.ARRaycastHit> hits = new List<UnityEngine.XR.ARFoundation.ARRaycastHit>();
+                    if (rayMgr.Raycast(fwdRay, hits, UnityEngine.XR.ARSubsystems.TrackableType.PlaneWithinPolygon | UnityEngine.XR.ARSubsystems.TrackableType.PlaneWithinBounds) && hits.Count > 0)
+                    {
+                        return hits[0].pose.position;
+                    }
+                }
 
-            return new Vector3(0f, 0f, spawnDistance);
+                // Priority 3: Comfortable eye-level distance in front of camera
+                Vector3 camFwd = mainCam.transform.forward;
+                camFwd.y = 0;
+                if (camFwd.sqrMagnitude < 0.01f) camFwd = mainCam.transform.forward;
+                camFwd.Normalize();
+                return mainCam.transform.position + camFwd * 0.70f;
+            }
+
+            return new Vector3(0f, 0f, 0.70f);
         }
 
         /// <summary>

@@ -11,7 +11,6 @@ namespace WireSystem.Editor
     /// </summary>
     public static class WireSystemSetup
     {
-        [MenuItem("Tools/Wire System/1. Setup TerminalPorts on Breaker", false, 1)]
         public static void SetupTerminals()
         {
             GameObject breaker = GameObject.Find("3_pole_mcb_final");
@@ -87,7 +86,6 @@ namespace WireSystem.Editor
                 $"Configured {configuredCount} TerminalPorts on '{breaker.name}'.\nTerminals set to maxWires=1 with Up/Down exit directions.", "OK");
         }
 
-        [MenuItem("Tools/Wire System/1b. Setup TerminalPorts on Contactor", false, 2)]
         public static void SetupContactorTerminals()
         {
             GameObject contactor = GameObject.Find("3_pole_contactor_final");
@@ -172,7 +170,6 @@ namespace WireSystem.Editor
             EditorUtility.SetDirty(port);
         }
 
-        [MenuItem("Tools/Wire System/2. Create or Locate Wire Material", false, 2)]
         public static Material CreateOrLocateWireMaterial()
         {
             string resourcesDir = "Assets/Resources";
@@ -205,7 +202,6 @@ namespace WireSystem.Editor
             return mat;
         }
 
-        [MenuItem("Tools/Wire System/3. Setup Complete Wire System in Scene", false, 3)]
         public static void SetupCompleteWireSystem()
         {
             // 1. Setup terminals on breaker
@@ -262,7 +258,6 @@ namespace WireSystem.Editor
                 "Enter Play Mode and click/drag between terminals to test!", "Let's Go!");
         }
 
-        [MenuItem("Tools/Wire System/Clear All Active Wires in Scene", false, 20)]
         public static void ClearAllWiresInScene()
         {
             Wire[] wires = Object.FindObjectsByType<Wire>(FindObjectsSortMode.None);

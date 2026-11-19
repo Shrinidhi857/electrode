@@ -37,7 +37,7 @@ namespace ContactorAR.UI
         private static readonly Color WarningAmber = new Color32(245, 158, 11, 255); // #F59E0B
         private static readonly Color TextLight    = new Color32(229, 231, 235, 255);// #E5E7EB
         private static readonly Color TextMuted    = new Color32(156, 163, 175, 255);// #9CA3AF
-        private static readonly Color BorderSubtle = new Color32(60, 70, 90, 80);
+        private static readonly Color BorderSubtle = new Color32(255, 255, 255, 32); // Crisp 1px glass border sheen
 
         [Header("Scene References")]
         [SerializeField] private ContactorController contactor;
@@ -60,6 +60,13 @@ namespace ContactorAR.UI
         private GameObject detailsDrawer;
         private TextMeshProUGUI detailsText;
         private bool isDetailsDrawerOpen = false;
+
+        // FPS Counter (Top-Right Corner)
+        private RectTransform fpsBadgeRect;
+        private TextMeshProUGUI fpsText;
+        private int fpsFrameCount = 0;
+        private float fpsTimeAccum = 0f;
+        private const float FPS_UPDATE_INTERVAL = 0.20f;
 
         // FAB (+) and Left Sidebar
         private Button fabAddButton;
@@ -95,6 +102,9 @@ namespace ContactorAR.UI
         private GameObject contextMcbContainer;
         private GameObject contextContactorContainer;
         private GameObject contextWireContainer;
+        private Button contextBtnFixLock;
+        private TextMeshProUGUI contextBtnFixLockText;
+        private Image contextBtnFixLockBg;
         private Button contextBtnMcbToggle;
         private TextMeshProUGUI contextBtnMcbToggleText;
         private Button contextBtnMcbTrip;
@@ -112,6 +122,17 @@ namespace ContactorAR.UI
         private GameObject confirmModal;
         private TextMeshProUGUI confirmModalText;
         private Action onConfirmAction;
+
+        // Splash / Welcome View ("Flash Views")
+        private GameObject splashScreenOverlay;
+        private CanvasGroup splashCanvasGroup;
+        private Coroutine splashAnimationCo;
+
+        // HUD root GameObjects — hidden during splash, shown after
+        private GameObject topStatusBarGO;
+        private GameObject bottomToolbarGO;
+        private GameObject fabAddButtonGO;
+        private GameObject fpsCounterGO;
 
         // Undo Snackbar
         private RectTransform snackbarRect;
@@ -217,6 +238,7 @@ namespace ContactorAR.UI
         {
             UpdateAllTelemetry();
             UpdateContextBarDynamicState();
+            UpdateFPS();
             ApplySafeArea();
         }
 
@@ -298,6 +320,7 @@ namespace ContactorAR.UI
 
             // Build individual modern UI layers
             BuildTopStatusBar(safeAreaRect);
+            BuildFPSCounter(safeAreaRect);
             BuildDetailsDrawer(safeAreaRect);
             BuildContextualBar(safeAreaRect);
             BuildBottomToolbar(safeAreaRect);
@@ -306,18 +329,22 @@ namespace ContactorAR.UI
             BuildBottomSheet(safeAreaRect);
             BuildConfirmModal(safeAreaRect);
             BuildUndoSnackbar(safeAreaRect);
+            BuildSplashScreen(parentContainer);
         }
 
-        // 1. Top Status Bar (Slim, translucent, single row)
+        // 1. Top Status Bar (Slim, translucent, single row with room for FPS counter)
         private void BuildTopStatusBar(Transform parent)
         {
+            // Positioned at top-left/center with right margin reserved for the FPS badge (130px + 16px gap)
             GameObject barGO = CreateGlassPanel("TopStatusBar", parent,
                 anchorMin: new Vector2(0f, 1f), anchorMax: new Vector2(1f, 1f),
-                pivot: new Vector2(0.5f, 1f),
-                pos: new Vector2(0f, -12f),
-                sizeDelta: new Vector2(-40f, 56f),
+                pivot: new Vector2(0f, 1f),
+                pos: new Vector2(20f, -12f),
+                sizeDelta: new Vector2(-180f, 56f),
                 bgColor: BgDark, cornerRadius: 18);
             topStatusBarRect = barGO.GetComponent<RectTransform>();
+            topStatusBarGO = barGO;
+            topStatusBarGO.SetActive(false); // Hidden until splash completes
 
             // Button to tap-to-expand details
             Button barBtn = barGO.AddComponent<Button>();
@@ -366,6 +393,50 @@ namespace ContactorAR.UI
             leExp.preferredWidth = 30f;
         }
 
+        // Top-Right FPS Counter
+        private void BuildFPSCounter(Transform parent)
+        {
+            GameObject fpsGO = CreateGlassPanel("FPSCounter", parent,
+                anchorMin: new Vector2(1f, 1f), anchorMax: new Vector2(1f, 1f),
+                pivot: new Vector2(1f, 1f),
+                pos: new Vector2(-20f, -12f),
+                sizeDelta: new Vector2(130f, 56f),
+                bgColor: SurfaceDark, cornerRadius: 18);
+            fpsBadgeRect = fpsGO.GetComponent<RectTransform>();
+            fpsCounterGO = fpsGO;
+            fpsCounterGO.SetActive(false); // Hidden until splash completes
+
+            fpsText = CreateText("FPSText", fpsGO.transform, "● 60 FPS", 16f, FontStyles.Bold, SuccessGreen, TextAlignmentOptions.Center);
+            RectTransform ftRect = fpsText.GetComponent<RectTransform>();
+            ftRect.anchorMin = Vector2.zero; ftRect.anchorMax = Vector2.one;
+            ftRect.offsetMin = Vector2.zero; ftRect.offsetMax = Vector2.zero;
+        }
+
+        private void UpdateFPS()
+        {
+            fpsFrameCount++;
+            fpsTimeAccum += Time.unscaledDeltaTime;
+
+            if (fpsTimeAccum >= FPS_UPDATE_INTERVAL)
+            {
+                float fps = fpsFrameCount / fpsTimeAccum;
+                fpsFrameCount = 0;
+                fpsTimeAccum = 0f;
+
+                if (fpsText != null)
+                {
+                    int roundFps = Mathf.RoundToInt(fps);
+                    fpsText.text = $"● {roundFps} FPS";
+                    if (roundFps >= 50)
+                        fpsText.color = SuccessGreen;
+                    else if (roundFps >= 30)
+                        fpsText.color = WarningAmber;
+                    else
+                        fpsText.color = DangerRed;
+                }
+            }
+        }
+
         // Details drawer that drops down below TopStatusBar
         private void BuildDetailsDrawer(Transform parent)
         {
@@ -397,14 +468,16 @@ namespace ContactorAR.UI
             GameObject fabGO = CreateGlassPanel("FAB_AddButton", parent,
                 anchorMin: new Vector2(1f, 0f), anchorMax: new Vector2(1f, 0f),
                 pivot: new Vector2(1f, 0f),
-                pos: new Vector2(-28f, 110f),
-                sizeDelta: new Vector2(68f, 68f),
-                bgColor: AccentBlue, cornerRadius: 34);
+                pos: new Vector2(-22f, 128f),               // lifted to clear taller bottom bar
+                sizeDelta: new Vector2(80f, 80f),            // bigger: 68 → 80
+                bgColor: AccentBlue, cornerRadius: 40);      // perfect circle
 
             fabAddButton = fabGO.AddComponent<Button>();
             fabAddButton.onClick.AddListener(OpenLeftSidebar);
+            fabAddButtonGO = fabGO;
+            fabAddButtonGO.SetActive(false); // Hidden until splash completes
 
-            TextMeshProUGUI plusText = CreateText("PlusIcon", fabGO.transform, "+", 38f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            TextMeshProUGUI plusText = CreateText("PlusIcon", fabGO.transform, "+", 44f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             RectTransform ptRect = plusText.GetComponent<RectTransform>();
             ptRect.anchorMin = Vector2.zero; ptRect.anchorMax = Vector2.one;
             ptRect.offsetMin = new Vector2(0f, 2f); ptRect.offsetMax = new Vector2(0f, 2f);
@@ -513,34 +586,34 @@ namespace ContactorAR.UI
             GameObject cardGO = CreateGlassPanel($"Card_{title}", parent,
                 anchorMin: new Vector2(0f, 1f), anchorMax: new Vector2(1f, 1f),
                 pivot: new Vector2(0.5f, 1f),
-                pos: Vector2.zero, sizeDelta: new Vector2(0f, 76f),
-                bgColor: SurfaceDark, cornerRadius: 16);
+                pos: Vector2.zero, sizeDelta: new Vector2(0f, 92f),  // taller: 76 → 92
+                bgColor: SurfaceDark, cornerRadius: 20);
 
             LayoutElement le = cardGO.AddComponent<LayoutElement>();
-            le.preferredHeight = 76f;
-            le.minHeight = 76f;
+            le.preferredHeight = 92f;
+            le.minHeight = 92f;
 
             Button cardBtn = cardGO.AddComponent<Button>();
             cardBtn.onClick.AddListener(() => OnComponentCardClicked(componentIdx, title));
 
-            // Accent stripe on the left
+            // Thicker accent stripe on the left
             GameObject stripe = CreateGlassPanel("Stripe", cardGO.transform,
                 anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(0f, 1f),
                 pivot: new Vector2(0f, 0.5f),
-                pos: new Vector2(3f, 0f), sizeDelta: new Vector2(5f, -12f),
+                pos: new Vector2(3f, 0f), sizeDelta: new Vector2(6f, -16f),
                 bgColor: accent, cornerRadius: 3);
 
-            // Title
-            TextMeshProUGUI titleTxt = CreateText("Title", cardGO.transform, title, 17f, FontStyles.Bold, TextLight, TextAlignmentOptions.MidlineLeft);
+            // Title — larger
+            TextMeshProUGUI titleTxt = CreateText("Title", cardGO.transform, title, 19f, FontStyles.Bold, TextLight, TextAlignmentOptions.MidlineLeft);
             RectTransform trRect = titleTxt.GetComponent<RectTransform>();
             trRect.anchorMin = new Vector2(0f, 0.5f); trRect.anchorMax = new Vector2(1f, 1f);
-            trRect.offsetMin = new Vector2(24f, 0f); trRect.offsetMax = new Vector2(-12f, 0f);
+            trRect.offsetMin = new Vector2(26f, 0f); trRect.offsetMax = new Vector2(-12f, 0f);
 
             // Subtitle
-            TextMeshProUGUI subTxt = CreateText("Subtitle", cardGO.transform, subtitle, 12f, FontStyles.Normal, TextMuted, TextAlignmentOptions.MidlineLeft);
+            TextMeshProUGUI subTxt = CreateText("Subtitle", cardGO.transform, subtitle, 13f, FontStyles.Normal, TextMuted, TextAlignmentOptions.MidlineLeft);
             RectTransform srRect = subTxt.GetComponent<RectTransform>();
-            srRect.anchorMin = new Vector2(0f, 0f); trRect.anchorMax = new Vector2(1f, 0.5f);
-            srRect.offsetMin = new Vector2(24f, 6f); srRect.offsetMax = new Vector2(-12f, 0f);
+            srRect.anchorMin = new Vector2(0f, 0f); srRect.anchorMax = new Vector2(1f, 0.5f);
+            srRect.offsetMin = new Vector2(26f, 6f); srRect.offsetMax = new Vector2(-12f, 0f);
         }
 
         private void OnComponentCardClicked(int index, string componentName)
@@ -587,15 +660,17 @@ namespace ContactorAR.UI
                 anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(1f, 0f),
                 pivot: new Vector2(0.5f, 0f),
                 pos: new Vector2(0f, 16f),
-                sizeDelta: new Vector2(-40f, 76f),
-                bgColor: BgDark, cornerRadius: 22);
+                sizeDelta: new Vector2(-24f, 96f),          // taller: 76 → 96
+                bgColor: BgDark, cornerRadius: 28);
 
             HorizontalLayoutGroup hlg = barGO.AddComponent<HorizontalLayoutGroup>();
             hlg.childAlignment = TextAnchor.MiddleCenter;
-            hlg.spacing = 10f;
-            hlg.padding = new RectOffset(12, 12, 8, 8);
+            hlg.spacing = 8f;
+            hlg.padding = new RectOffset(10, 10, 10, 10);   // even inset
             hlg.childControlWidth = true; hlg.childControlHeight = true;
             hlg.childForceExpandWidth = true; hlg.childForceExpandHeight = true;
+            bottomToolbarGO = barGO;
+            bottomToolbarGO.SetActive(false); // Hidden until splash completes
 
             // 1. Select / Move
             btnModeSelect = CreateToolbarButton(barGO.transform, "Select", "✥", out btnModeSelectBg, out btnModeSelectText, OnToolbarSelectClicked);
@@ -615,16 +690,17 @@ namespace ContactorAR.UI
                 anchorMin: Vector2.zero, anchorMax: Vector2.one,
                 pivot: new Vector2(0.5f, 0.5f),
                 pos: Vector2.zero, sizeDelta: Vector2.zero,
-                bgColor: SurfaceDark, cornerRadius: 16);
+                bgColor: SurfaceDark, cornerRadius: 20);    // rounder pill
             bgImage = btnGO.GetComponent<Image>();
 
             Button btn = btnGO.AddComponent<Button>();
             btn.onClick.AddListener(action);
 
-            textComp = CreateText("Label", btnGO.transform, $"{icon}\n{label}", 14f, FontStyles.Bold, TextLight, TextAlignmentOptions.Center);
+            // Icon on top, label below — both bigger for thumb-friendly tapping
+            textComp = CreateText("Label", btnGO.transform, $"{icon}\n{label}", 15.5f, FontStyles.Bold, TextLight, TextAlignmentOptions.Center);
             RectTransform tr = textComp.GetComponent<RectTransform>();
             tr.anchorMin = Vector2.zero; tr.anchorMax = Vector2.one;
-            tr.offsetMin = Vector2.zero; tr.offsetMax = Vector2.zero;
+            tr.offsetMin = new Vector2(2f, 2f); tr.offsetMax = new Vector2(-2f, -2f);
 
             return btn;
         }
@@ -854,104 +930,141 @@ namespace ContactorAR.UI
             });
         }
 
-        // 5. Contextual Action Bar (Anchored directly above the bottom toolbar, disappears when nothing is selected)
+        // 5. Contextual Action Bar (Modern 2-tier floating glass card, appears when model/wire is selected)
         private void BuildContextualBar(Transform parent)
         {
             GameObject barGO = CreateGlassPanel("ContextualBar", parent,
                 anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(1f, 0f),
                 pivot: new Vector2(0.5f, 0f),
-                pos: new Vector2(0f, 102f),
-                sizeDelta: new Vector2(-40f, 68f),
-                bgColor: SurfaceDark, cornerRadius: 20);
+                pos: new Vector2(0f, 118f),
+                sizeDelta: new Vector2(-20f, 134f),
+                bgColor: SurfaceDark, cornerRadius: 24);
             contextBarRect = barGO.GetComponent<RectTransform>();
 
-            // Title label (left side)
-            contextTitleText = CreateText("ContextTitle", barGO.transform, "MCB", 15f, FontStyles.Bold, AccentBlue, TextAlignmentOptions.MidlineLeft);
-            RectTransform ctr = contextTitleText.GetComponent<RectTransform>();
-            ctr.anchorMin = new Vector2(0f, 0f); ctr.anchorMax = new Vector2(0.24f, 1f);
-            ctr.offsetMin = new Vector2(16f, 0f); ctr.offsetMax = Vector2.zero;
+            // Vertical layout: Top row (Title + Fix/Lock + Rotate + Delete) & Bottom row (Model-specific controls)
+            VerticalLayoutGroup vlg = barGO.AddComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(12, 12, 10, 10);
+            vlg.spacing = 8f;
+            vlg.childControlWidth = true;
+            vlg.childControlHeight = true;
+            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandHeight = false;
+
+            // ── Tier 1: Header Row (Title on left, Common Actions on right) ──
+            GameObject headerRow = new GameObject("HeaderRow", typeof(RectTransform));
+            headerRow.transform.SetParent(barGO.transform, false);
+            LayoutElement hle = headerRow.AddComponent<LayoutElement>();
+            hle.preferredHeight = 50f;
+            hle.minHeight = 50f;
+
+            HorizontalLayoutGroup hHlg = headerRow.AddComponent<HorizontalLayoutGroup>();
+            hHlg.childAlignment = TextAnchor.MiddleCenter;
+            hHlg.spacing = 8f;
+            hHlg.childControlWidth = true;
+            hHlg.childControlHeight = true;
+            hHlg.childForceExpandWidth = false;
+            hHlg.childForceExpandHeight = true;
+
+            // Title (takes remaining width on the left)
+            contextTitleText = CreateText("ContextTitle", headerRow.transform, "⚡ CONTACTOR", 17f, FontStyles.Bold, AccentBlue, TextAlignmentOptions.MidlineLeft);
+            LayoutElement titleLe = contextTitleText.gameObject.AddComponent<LayoutElement>();
+            titleLe.flexibleWidth = 1f;
+            titleLe.minWidth = 100f;
+
+            // Action: Lock / Fix toggle button ("🔒 FIXED" / "✥ MOVE")
+            contextBtnFixLock = CreateContextButton(headerRow.transform, "FixLock", "🔒 FIXED", out contextBtnFixLockText, out contextBtnFixLockBg, SuccessGreen, OnContextFixLockClicked, 105f);
+
+            // Action: Rotate 90° button ("↻ 90°")
+            contextBtnRotate = CreateContextButton(headerRow.transform, "Rotate", "↻ 90°", out _, out _, SurfaceLight, OnContextRotateClicked, 80f);
+
+            // Action: Delete button ("🗑 DELETE")
+            contextBtnDelete = CreateContextButton(headerRow.transform, "Delete", "🗑 DELETE", out _, out _, DangerRed, OnContextDeleteModelClicked, 110f);
+
+            // ── Tier 2: Controls Row (Model-specific buttons) ───────────────
+            GameObject controlsRow = new GameObject("ControlsRow", typeof(RectTransform));
+            controlsRow.transform.SetParent(barGO.transform, false);
+            LayoutElement cle = controlsRow.AddComponent<LayoutElement>();
+            cle.preferredHeight = 54f;
+            cle.minHeight = 54f;
 
             // MCB Sub-container
-            contextMcbContainer = new GameObject("McbContainer");
-            contextMcbContainer.transform.SetParent(barGO.transform, false);
-            RectTransform mcbRect = contextMcbContainer.AddComponent<RectTransform>();
-            mcbRect.anchorMin = new Vector2(0.25f, 0f); mcbRect.anchorMax = new Vector2(0.72f, 1f);
+            contextMcbContainer = new GameObject("McbContainer", typeof(RectTransform));
+            contextMcbContainer.transform.SetParent(controlsRow.transform, false);
+            RectTransform mcbRect = contextMcbContainer.GetComponent<RectTransform>();
+            mcbRect.anchorMin = Vector2.zero; mcbRect.anchorMax = Vector2.one;
             mcbRect.offsetMin = Vector2.zero; mcbRect.offsetMax = Vector2.zero;
             HorizontalLayoutGroup mcbHlg = contextMcbContainer.AddComponent<HorizontalLayoutGroup>();
             mcbHlg.childAlignment = TextAnchor.MiddleCenter;
-            mcbHlg.spacing = 8f;
+            mcbHlg.spacing = 10f;
             mcbHlg.childControlWidth = true; mcbHlg.childControlHeight = true;
+            mcbHlg.childForceExpandWidth = true; mcbHlg.childForceExpandHeight = true;
 
             contextBtnMcbToggle = CreateContextButton(contextMcbContainer.transform, "Toggle", "SWITCH ON", out contextBtnMcbToggleText, SuccessGreen, OnContextMcbToggleClicked);
-            contextBtnMcbTrip = CreateContextButton(contextMcbContainer.transform, "Trip", "TEST TRIP", out _, WarningAmber, OnSheetTestTripClicked);
+            contextBtnMcbTrip   = CreateContextButton(contextMcbContainer.transform, "Trip",   "TEST TRIP", out _, WarningAmber, OnSheetTestTripClicked);
 
-            // Contactor Sub-container (compact segmented coil control)
-            contextContactorContainer = new GameObject("ContactorContainer");
-            contextContactorContainer.transform.SetParent(barGO.transform, false);
-            RectTransform ctRect = contextContactorContainer.AddComponent<RectTransform>();
-            ctRect.anchorMin = new Vector2(0.25f, 0f); ctRect.anchorMax = new Vector2(0.72f, 1f);
+            // Contactor Sub-container
+            contextContactorContainer = new GameObject("ContactorContainer", typeof(RectTransform));
+            contextContactorContainer.transform.SetParent(controlsRow.transform, false);
+            RectTransform ctRect = contextContactorContainer.GetComponent<RectTransform>();
+            ctRect.anchorMin = Vector2.zero; ctRect.anchorMax = Vector2.one;
             ctRect.offsetMin = Vector2.zero; ctRect.offsetMax = Vector2.zero;
             HorizontalLayoutGroup ctHlg = contextContactorContainer.AddComponent<HorizontalLayoutGroup>();
             ctHlg.childAlignment = TextAnchor.MiddleCenter;
-            ctHlg.spacing = 6f;
+            ctHlg.spacing = 8f;
             ctHlg.childControlWidth = true; ctHlg.childControlHeight = true;
+            ctHlg.childForceExpandWidth = true; ctHlg.childForceExpandHeight = true;
 
-            contextBtnCoilOn = CreateContextButton(contextContactorContainer.transform, "CoilOn", "ON", out _, SuccessGreen, OnCoilOnClicked);
-            contextBtnCoilOff = CreateContextButton(contextContactorContainer.transform, "CoilOff", "OFF", out _, DangerRed, OnCoilOffClicked);
-            contextBtnCoilToggle = CreateContextButton(contextContactorContainer.transform, "Toggle", "TOGGLE", out _, AccentBlue, OnCoilToggleClicked);
-            contextBtnManualPress = CreateContextButton(contextContactorContainer.transform, "Press", "PRESS", out contextBtnManualPressText, WarningAmber, OnManualPressClicked);
+            contextBtnCoilOn      = CreateContextButton(contextContactorContainer.transform, "CoilOn",   "ON",     out _,                       SuccessGreen,  OnCoilOnClicked);
+            contextBtnCoilOff     = CreateContextButton(contextContactorContainer.transform, "CoilOff",  "OFF",    out _,                       DangerRed,     OnCoilOffClicked);
+            contextBtnCoilToggle  = CreateContextButton(contextContactorContainer.transform, "Toggle",   "TOGGLE", out _,                       AccentBlue,    OnCoilToggleClicked);
+            contextBtnManualPress = CreateContextButton(contextContactorContainer.transform, "Press",    "PRESS",  out contextBtnManualPressText, WarningAmber, OnManualPressClicked);
 
             // Wire Sub-container
-            contextWireContainer = new GameObject("WireContainer");
-            contextWireContainer.transform.SetParent(barGO.transform, false);
-            RectTransform wrRect = contextWireContainer.AddComponent<RectTransform>();
-            wrRect.anchorMin = new Vector2(0.25f, 0f); wrRect.anchorMax = new Vector2(0.72f, 1f);
+            contextWireContainer = new GameObject("WireContainer", typeof(RectTransform));
+            contextWireContainer.transform.SetParent(controlsRow.transform, false);
+            RectTransform wrRect = contextWireContainer.GetComponent<RectTransform>();
+            wrRect.anchorMin = Vector2.zero; wrRect.anchorMax = Vector2.one;
             wrRect.offsetMin = Vector2.zero; wrRect.offsetMax = Vector2.zero;
             HorizontalLayoutGroup wrHlg = contextWireContainer.AddComponent<HorizontalLayoutGroup>();
             wrHlg.childAlignment = TextAnchor.MiddleCenter;
-            wrHlg.spacing = 8f;
+            wrHlg.spacing = 10f;
             wrHlg.childControlWidth = true; wrHlg.childControlHeight = true;
+            wrHlg.childForceExpandWidth = true; wrHlg.childForceExpandHeight = true;
 
-            contextBtnWireDelete = CreateContextButton(contextWireContainer.transform, "DeleteWire", "DELETE WIRE", out _, DangerRed, OnContextDeleteWireClicked);
-
-            // Universal Right-side buttons: [ Rotate 90° ] and [ Delete 🗑 ]
-            GameObject rightActions = new GameObject("RightActions");
-            rightActions.transform.SetParent(barGO.transform, false);
-            RectTransform raRect = rightActions.AddComponent<RectTransform>();
-            raRect.anchorMin = new Vector2(0.73f, 0f); raRect.anchorMax = new Vector2(1f, 1f);
-            raRect.offsetMin = Vector2.zero; raRect.offsetMax = new Vector2(-12f, 0f);
-            HorizontalLayoutGroup raHlg = rightActions.AddComponent<HorizontalLayoutGroup>();
-            raHlg.childAlignment = TextAnchor.MiddleRight;
-            raHlg.spacing = 8f;
-            raHlg.childControlWidth = false; raHlg.childControlHeight = true;
-
-            contextBtnRotate = CreateContextButton(rightActions.transform, "Rotate", "90° ↻", out _, SurfaceLight, OnContextRotateClicked, 85f);
-            contextBtnDelete = CreateContextButton(rightActions.transform, "Delete", "🗑", out _, DangerRed, OnContextDeleteModelClicked, 64f);
+            contextBtnWireDelete = CreateContextButton(contextWireContainer.transform, "DeleteWire", "🗑 DELETE WIRE", out _, DangerRed, OnContextDeleteWireClicked);
 
             contextBarRect.gameObject.SetActive(false); // Hidden by default
         }
 
         private Button CreateContextButton(Transform parent, string name, string text, out TextMeshProUGUI textComp, Color bgColor, UnityEngine.Events.UnityAction action, float fixedWidth = 0f)
         {
+            return CreateContextButton(parent, name, text, out textComp, out _, bgColor, action, fixedWidth);
+        }
+
+        private Button CreateContextButton(Transform parent, string name, string text, out TextMeshProUGUI textComp, out Image bgComp, Color bgColor, UnityEngine.Events.UnityAction action, float fixedWidth = 0f)
+        {
             GameObject btnGO = CreateGlassPanel($"BtnCtx_{name}", parent,
                 anchorMin: Vector2.zero, anchorMax: Vector2.one,
                 pivot: new Vector2(0.5f, 0.5f),
                 pos: Vector2.zero, sizeDelta: Vector2.zero,
-                bgColor: bgColor, cornerRadius: 14);
+                bgColor: bgColor, cornerRadius: 16);
+
+            bgComp = btnGO.GetComponent<Image>();
 
             if (fixedWidth > 0f)
             {
                 LayoutElement le = btnGO.AddComponent<LayoutElement>();
                 le.preferredWidth = fixedWidth;
+                le.flexibleWidth = 0f;
             }
 
             Button btn = btnGO.AddComponent<Button>();
             btn.onClick.AddListener(action);
 
-            textComp = CreateText("Label", btnGO.transform, text, 14f, FontStyles.Bold, TextLight, TextAlignmentOptions.Center);
+            textComp = CreateText("Label", btnGO.transform, text, 15f, FontStyles.Bold, TextLight, TextAlignmentOptions.Center);
             RectTransform tr = textComp.GetComponent<RectTransform>();
             tr.anchorMin = Vector2.zero; tr.anchorMax = Vector2.one;
-            tr.offsetMin = Vector2.zero; tr.offsetMax = Vector2.zero;
+            tr.offsetMin = new Vector2(4f, 0f); tr.offsetMax = new Vector2(-4f, 0f);
 
             return btn;
         }
@@ -962,42 +1075,48 @@ namespace ContactorAR.UI
 
             ARModelManipulator model = SelectionManager.SelectedModel ?? ARModelManipulator.Selected;
             CylindricalWire wire = SelectionManager.SelectedWire;
+            bool hasSelection = (wire != null || model != null);
+
+            contextBarRect.gameObject.SetActive(hasSelection);
+
+            // Hide FAB button while model/wire is selected to prevent overlap
+            if (fabAddButtonGO != null)
+            {
+                fabAddButtonGO.SetActive(!hasSelection);
+            }
 
             if (wire != null)
             {
-                contextBarRect.gameObject.SetActive(true);
-                contextTitleText.text = $"{wire.PhaseName}";
+                contextTitleText.text = $"⚡ {wire.PhaseName}";
                 contextMcbContainer.SetActive(false);
                 contextContactorContainer.SetActive(false);
                 contextWireContainer.SetActive(true);
-                contextBtnRotate.gameObject.SetActive(false);
-                contextBtnDelete.gameObject.SetActive(false);
+                if (contextBtnFixLock != null) contextBtnFixLock.gameObject.SetActive(false);
+                if (contextBtnRotate != null) contextBtnRotate.gameObject.SetActive(false);
+                if (contextBtnDelete != null) contextBtnDelete.gameObject.SetActive(false);
             }
             else if (model != null)
             {
-                contextBarRect.gameObject.SetActive(true);
                 string mName = model.gameObject.name;
-                contextBtnRotate.gameObject.SetActive(true);
-                contextBtnDelete.gameObject.SetActive(true);
+                if (contextBtnFixLock != null) contextBtnFixLock.gameObject.SetActive(true);
+                if (contextBtnRotate != null) contextBtnRotate.gameObject.SetActive(true);
+                if (contextBtnDelete != null) contextBtnDelete.gameObject.SetActive(true);
 
                 if (mName.ToLowerInvariant().Contains("contactor"))
                 {
-                    contextTitleText.text = "CONTACTOR";
+                    contextTitleText.text = "⚡ CONTACTOR";
                     contextMcbContainer.SetActive(false);
                     contextContactorContainer.SetActive(true);
                     contextWireContainer.SetActive(false);
                 }
                 else
                 {
-                    contextTitleText.text = mName.Contains("2P") ? "MCB 2P" : "4-POLE MCB";
+                    contextTitleText.text = mName.Contains("2P") ? "⚡ MCB 2P" : "⚡ 4-POLE MCB";
                     contextMcbContainer.SetActive(true);
                     contextContactorContainer.SetActive(false);
                     contextWireContainer.SetActive(false);
                 }
-            }
-            else
-            {
-                contextBarRect.gameObject.SetActive(false);
+                UpdateContextBarDynamicState();
             }
         }
 
@@ -1005,12 +1124,33 @@ namespace ContactorAR.UI
         {
             if (contextBarRect == null || !contextBarRect.gameObject.activeSelf) return;
 
+            // Update Lock / Fix toggle button status
+            ARModelManipulator target = SelectionManager.SelectedModel ?? ARModelManipulator.Selected ?? manipulator;
+            if (target != null && contextBtnFixLockText != null)
+            {
+                bool isLocked = target.Mode == PlacementMode.Locked || target.Mode == PlacementMode.HangingAtCoordinates;
+                contextBtnFixLockText.text = isLocked ? "🔒 FIXED" : "✥ MOVE";
+                if (contextBtnFixLockBg != null)
+                    contextBtnFixLockBg.color = isLocked ? SuccessGreen : WarningAmber;
+            }
+
+            // Update MCB Switch button status
             if (contextBtnMcbToggleText != null && contactor != null && contactor.Lever != null)
             {
                 bool isOn = contactor.Lever.CurrentState == BreakerState.On;
                 contextBtnMcbToggleText.text = isOn ? "SWITCH OFF" : "SWITCH ON";
                 Image bg = contextBtnMcbToggle.GetComponent<Image>();
                 if (bg != null) bg.color = isOn ? DangerRed : SuccessGreen;
+            }
+        }
+
+        private void OnContextFixLockClicked()
+        {
+            ARModelManipulator target = SelectionManager.SelectedModel ?? ARModelManipulator.Selected ?? manipulator;
+            if (target != null)
+            {
+                target.ToggleMovable();
+                UpdateContextBarDynamicState();
             }
         }
 
@@ -1190,6 +1330,215 @@ namespace ContactorAR.UI
         {
             ShowSnackbar($"{description}");
         }
+
+        // ── Splash Screen ("Flash Views") ────────────────────────────────────────────
+        // Screen 1  → App identity      (2.5 s)
+        // Screen 2  → Feature flash     (1.8 s)
+        // Screen 3  → Scan coaching     (1.5 s)
+        // Fade-out  →                   (0.5 s)
+        // After: main HUD becomes visible
+        private void BuildSplashScreen(Transform parent)
+        {
+            // Full-screen overlay sits above all other panels (siblings ordered last = on top)
+            GameObject overlayGO = new GameObject("SplashOverlay");
+            overlayGO.transform.SetParent(parent, false);
+            overlayGO.transform.SetAsLastSibling();
+
+            RectTransform rt = overlayGO.AddComponent<RectTransform>();
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+
+            // CanvasGroup lets us fade the whole overlay at once
+            splashCanvasGroup = overlayGO.AddComponent<CanvasGroup>();
+            splashCanvasGroup.alpha = 1f;
+            splashCanvasGroup.blocksRaycasts = true;
+
+            // Dark background
+            Image bg = overlayGO.AddComponent<Image>();
+            bg.color = BgDark;
+
+            splashScreenOverlay = overlayGO;
+
+            // ── Screen 1: App Identity ────────────────────────────────────────────
+            GameObject s1 = new GameObject("Screen1_Identity");
+            s1.transform.SetParent(overlayGO.transform, false);
+            RectTransform s1rt = s1.AddComponent<RectTransform>();
+            s1rt.anchorMin = Vector2.zero; s1rt.anchorMax = Vector2.one;
+            s1rt.offsetMin = Vector2.zero; s1rt.offsetMax = Vector2.zero;
+
+            // Brand icon circle
+            GameObject iconCircle = CreateGlassPanel("BrandCircle", s1.transform,
+                anchorMin: new Vector2(0.5f, 0.5f), anchorMax: new Vector2(0.5f, 0.5f),
+                pivot: new Vector2(0.5f, 0.5f),
+                pos: new Vector2(0f, 60f), sizeDelta: new Vector2(120f, 120f),
+                bgColor: AccentBlue, cornerRadius: 60);
+
+            TextMeshProUGUI iconText = CreateText("BoltIcon", iconCircle.transform,
+                "⚡", 56f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            RectTransform itRect = iconText.GetComponent<RectTransform>();
+            itRect.anchorMin = Vector2.zero; itRect.anchorMax = Vector2.one;
+            itRect.offsetMin = new Vector2(0f, 4f); itRect.offsetMax = new Vector2(0f, 4f);
+
+            // App title
+            TextMeshProUGUI appTitle = CreateText("AppTitle", s1.transform,
+                "Electrode AR", 42f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            RectTransform titleRect = appTitle.GetComponent<RectTransform>();
+            titleRect.anchorMin = new Vector2(0f, 0.5f); titleRect.anchorMax = new Vector2(1f, 0.5f);
+            titleRect.pivot = new Vector2(0.5f, 0.5f);
+            titleRect.anchoredPosition = new Vector2(0f, -16f);
+            titleRect.sizeDelta = new Vector2(0f, 56f);
+
+            // Tagline
+            TextMeshProUGUI tagline = CreateText("Tagline", s1.transform,
+                "AR Electrical Training Simulator", 18f, FontStyles.Normal,
+                new Color(1f, 1f, 1f, 0.60f), TextAlignmentOptions.Center);
+            RectTransform tagRect = tagline.GetComponent<RectTransform>();
+            tagRect.anchorMin = new Vector2(0f, 0.5f); tagRect.anchorMax = new Vector2(1f, 0.5f);
+            tagRect.pivot = new Vector2(0.5f, 0.5f);
+            tagRect.anchoredPosition = new Vector2(0f, -60f);
+            tagRect.sizeDelta = new Vector2(0f, 32f);
+
+            // ── Screen 2: Feature Flash ───────────────────────────────────────────
+            GameObject s2 = new GameObject("Screen2_Features");
+            s2.transform.SetParent(overlayGO.transform, false);
+            RectTransform s2rt = s2.AddComponent<RectTransform>();
+            s2rt.anchorMin = Vector2.zero; s2rt.anchorMax = Vector2.one;
+            s2rt.offsetMin = Vector2.zero; s2rt.offsetMax = Vector2.zero;
+
+            CanvasGroup s2cg = s2.AddComponent<CanvasGroup>();
+            s2cg.alpha = 0f;
+
+            string[] features = {
+                "⚡  Interactive Breaker Simulation",
+                "🔌  Real-Time Wire Connections",
+                "📐  Place on Any Surface"
+            };
+
+            for (int i = 0; i < features.Length; i++)
+            {
+                GameObject chip = CreateGlassPanel($"FeatureChip{i}", s2.transform,
+                    anchorMin: new Vector2(0.08f, 0.5f), anchorMax: new Vector2(0.92f, 0.5f),
+                    pivot: new Vector2(0.5f, 0.5f),
+                    pos: new Vector2(0f, 60f - i * 76f),
+                    sizeDelta: new Vector2(0f, 64f),
+                    bgColor: SurfaceDark, cornerRadius: 18);
+
+                TextMeshProUGUI featureTxt = CreateText($"FeatureTxt{i}", chip.transform,
+                    features[i], 20f, FontStyles.Normal, TextLight, TextAlignmentOptions.MidlineLeft);
+                RectTransform ftRect = featureTxt.GetComponent<RectTransform>();
+                ftRect.anchorMin = Vector2.zero; ftRect.anchorMax = Vector2.one;
+                ftRect.offsetMin = new Vector2(28f, 0f); ftRect.offsetMax = Vector2.zero;
+            }
+
+            // ── Screen 3: Scan Coaching ───────────────────────────────────────────
+            GameObject s3 = new GameObject("Screen3_ScanHint");
+            s3.transform.SetParent(overlayGO.transform, false);
+            RectTransform s3rt = s3.AddComponent<RectTransform>();
+            s3rt.anchorMin = Vector2.zero; s3rt.anchorMax = Vector2.one;
+            s3rt.offsetMin = Vector2.zero; s3rt.offsetMax = Vector2.zero;
+
+            CanvasGroup s3cg = s3.AddComponent<CanvasGroup>();
+            s3cg.alpha = 0f;
+
+            // Coaching card
+            GameObject card = CreateGlassPanel("ScanCard", s3.transform,
+                anchorMin: new Vector2(0.08f, 0.5f), anchorMax: new Vector2(0.92f, 0.5f),
+                pivot: new Vector2(0.5f, 0.5f),
+                pos: new Vector2(0f, 0f), sizeDelta: new Vector2(0f, 160f),
+                bgColor: SurfaceDark, cornerRadius: 24);
+
+            TextMeshProUGUI scanIcon = CreateText("ScanArc", card.transform,
+                "◎", 64f, FontStyles.Normal,
+                new Color(AccentBlue.r, AccentBlue.g, AccentBlue.b, 0.90f),
+                TextAlignmentOptions.Center);
+            RectTransform siRect = scanIcon.GetComponent<RectTransform>();
+            siRect.anchorMin = new Vector2(0f, 0.5f); siRect.anchorMax = new Vector2(1f, 1f);
+            siRect.offsetMin = new Vector2(0f, 4f); siRect.offsetMax = Vector2.zero;
+
+            TextMeshProUGUI scanHint = CreateText("ScanHint", card.transform,
+                "Move your phone slowly\nto scan surfaces", 20f, FontStyles.Normal,
+                new Color(1f, 1f, 1f, 0.80f), TextAlignmentOptions.Center);
+            RectTransform shRect = scanHint.GetComponent<RectTransform>();
+            shRect.anchorMin = new Vector2(0f, 0f); shRect.anchorMax = new Vector2(1f, 0.5f);
+            shRect.offsetMin = new Vector2(16f, 8f); shRect.offsetMax = new Vector2(-16f, 0f);
+
+            // Animate icon circle entrance on Screen 1 (scale 0.8 → 1.0)
+            RectTransform circleRT = iconCircle.GetComponent<RectTransform>();
+            circleRT.localScale = new Vector3(0.8f, 0.8f, 1f);
+
+            // Begin splash coroutine
+            splashAnimationCo = StartCoroutine(RunSplashSequence(s1, s2, s2cg, s3, s3cg, circleRT));
+        }
+
+        /// <summary>Drives the multi-screen splash sequence then reveals the main HUD.</summary>
+        private System.Collections.IEnumerator RunSplashSequence(
+            GameObject s1, GameObject s2, CanvasGroup s2cg,
+            GameObject s3, CanvasGroup s3cg,
+            RectTransform brandCircleRT)
+        {
+            // ── Screen 1: App Identity ──────────────────────────────────────────
+            // Pop brand circle in with ease-out scale 0.8 → 1.0
+            float elapsed = 0f;
+            float popDur = 0.45f;
+            while (elapsed < popDur)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                float t = Mathf.Clamp01(elapsed / popDur);
+                float ease = 1f - Mathf.Pow(1f - t, 3f);
+                float scale = Mathf.Lerp(0.8f, 1.0f, ease);
+                brandCircleRT.localScale = new Vector3(scale, scale, 1f);
+                yield return null;
+            }
+            brandCircleRT.localScale = Vector3.one;
+
+            yield return new WaitForSecondsRealtime(2.5f);
+
+            // ── Transition → Screen 2 ───────────────────────────────────────────
+            yield return StartCoroutine(FadeCanvasGroup(s2cg, 0f, 1f, 0.35f));
+            s1.SetActive(false); // Screen 1 no longer needed behind screen 2
+            yield return new WaitForSecondsRealtime(1.8f);
+
+            // ── Transition → Screen 3 ───────────────────────────────────────────
+            yield return StartCoroutine(FadeCanvasGroup(s3cg, 0f, 1f, 0.35f));
+            s2.SetActive(false);
+            yield return new WaitForSecondsRealtime(1.5f);
+
+            // ── Fade out entire overlay ─────────────────────────────────────────
+            yield return StartCoroutine(FadeCanvasGroup(splashCanvasGroup, 1f, 0f, 0.5f));
+
+            if (splashScreenOverlay != null)
+                splashScreenOverlay.SetActive(false);
+
+            // Reveal the main HUD now that the app is ready
+            ShowMainHUD();
+            splashAnimationCo = null;
+        }
+
+        /// <summary>Fades a CanvasGroup alpha from → to over duration (uses unscaled time).</summary>
+        private System.Collections.IEnumerator FadeCanvasGroup(CanvasGroup cg, float from, float to, float duration)
+        {
+            if (cg == null) yield break;
+            float elapsed = 0f;
+            cg.alpha = from;
+            while (elapsed < duration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                cg.alpha = Mathf.Lerp(from, to, Mathf.Clamp01(elapsed / duration));
+                yield return null;
+            }
+            cg.alpha = to;
+        }
+
+        /// <summary>Makes the main AR HUD visible after the splash sequence completes.</summary>
+        private void ShowMainHUD()
+        {
+            if (topStatusBarGO  != null) topStatusBarGO.SetActive(true);
+            if (fpsCounterGO    != null) fpsCounterGO.SetActive(true);
+            if (bottomToolbarGO != null) bottomToolbarGO.SetActive(true);
+            if (fabAddButtonGO  != null) fabAddButtonGO.SetActive(true);
+        }
         #endregion
 
         #region Telemetry & Event Handlers
@@ -1320,6 +1669,11 @@ namespace ContactorAR.UI
             img.sprite = roundedSprite;
             img.type = Image.Type.Sliced;
             img.color = bgColor;
+
+            // Crisp 1px glassmorphic border outline
+            Outline outline = go.AddComponent<Outline>();
+            outline.effectColor = BorderSubtle;
+            outline.effectDistance = new Vector2(1f, -1f);
 
             return go;
         }

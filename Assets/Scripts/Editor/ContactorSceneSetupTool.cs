@@ -16,7 +16,6 @@ namespace ContactorAR.Editor
     /// </summary>
     public static class ContactorSceneSetupTool
     {
-        [MenuItem("Tools/Breaker & Contactor AR/Setup Scene Automatically", false, 1)]
         public static void SetupSceneAutomatically()
         {
             // 0. Disable default AR Template (UI canvas & Object Spawner) to stop tap interference
@@ -219,7 +218,6 @@ namespace ContactorAR.Editor
             }
         }
 
-        [MenuItem("Tools/Breaker & Contactor AR/Setup Contactor in Scene", false, 2)]
         public static void SetupContactorInScene()
         {
             // 0. Disable default AR Template
@@ -308,7 +306,6 @@ namespace ContactorAR.Editor
                 "• Saved to Assets/Resources/Models/3_pole_contactor_final.prefab", "Awesome!");
         }
 
-        [MenuItem("Tools/Breaker & Contactor AR/Disable Default AR Template (UI & Spawner)", false, 3)]
         public static void DisableDefaultARTemplateMenu()
         {
             int count = DisableDefaultARTemplateInternal();
@@ -317,7 +314,6 @@ namespace ContactorAR.Editor
                 "The template will no longer intercept screen taps or spawn cubes/cylinders.", "OK");
         }
 
-        [MenuItem("Tools/Breaker & Contactor AR/Delete Template Overlay (Cube, Pyramid, Spawner)", false, 3)]
         public static void DeleteDefaultARTemplateMenu()
         {
             string[] names = { "UI", "Object Spawner" };

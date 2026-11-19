@@ -319,6 +319,13 @@ namespace ContactorAR.Breaker
             if (applyDefaultScale)
                 instance.transform.localScale = Vector3.one * CONTACTOR_DEFAULT_SCALE;
 
+            // FBX pivot fix: the contactor mesh is imported 180° rotated around Y.
+            // Correct it here so the model always faces the direction its parent rotation intends.
+            instance.transform.localEulerAngles = new Vector3(
+                instance.transform.localEulerAngles.x,
+                instance.transform.localEulerAngles.y + 180f,
+                instance.transform.localEulerAngles.z);
+
             // 1. ContactorController (circuit sim backbone)
             ContactorController contactor = instance.GetComponent<ContactorController>();
             if (contactor == null) contactor = instance.AddComponent<ContactorController>();
